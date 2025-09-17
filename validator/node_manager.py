@@ -672,19 +672,47 @@ class NodeManager:
                 self.validator.keypair.ss58_address
             ].node_id
 
+            # Calculate platform scores for detailed feedback
+            platform_scores = {}
+            weights_manager = self.validator.weights_manager
+
+            for platform_name in weights_manager.platform_manager.get_platform_names():
+                platform_score = weights_manager.calculate_platform_score(
+                    telemetry, platform_name
+                )
+                platform_config = weights_manager.platform_manager.get_platform(
+                    platform_name
+                )
+                platform_scores[platform_name] = {
+                    "score": platform_score,
+                    "weight": platform_config.emission_weight,
+                    "weighted_score": (
+                        platform_score * platform_config.emission_weight
+                    ),
+                }
+
             payload = {
-                "telemetry": {
-                    "web_success": telemetry.web_success,
-                    "twitter_returned_tweets": telemetry.twitter_returned_tweets,
-                    "twitter_returned_profiles": telemetry.twitter_returned_profiles,
-                    "twitter_errors": telemetry.twitter_errors,
-                    "twitter_auth_errors": telemetry.twitter_auth_errors,
-                    "twitter_ratelimit_errors": telemetry.twitter_ratelimit_errors,
-                    "web_errors": telemetry.web_errors,
-                    "boot_time": telemetry.boot_time,
-                    "last_operation_time": telemetry.last_operation_time,
-                    "current_time": telemetry.current_time,
-                },
+                "telemetry": (
+                    telemetry.stats_json
+                    if telemetry.stats_json
+                    else {
+                        # Fallback to legacy fields if stats_json is empty
+                        "web_success": telemetry.web_success,
+                        "twitter_returned_tweets": telemetry.twitter_returned_tweets,
+                        "twitter_returned_profiles": telemetry.twitter_returned_profiles,
+                        "twitter_errors": telemetry.twitter_errors,
+                        "twitter_auth_errors": telemetry.twitter_auth_errors,
+                        "twitter_ratelimit_errors": telemetry.twitter_ratelimit_errors,
+                        "web_errors": telemetry.web_errors,
+                        "boot_time": telemetry.boot_time,
+                        "last_operation_time": telemetry.last_operation_time,
+                        "current_time": telemetry.current_time,
+                    }
+                ),
+                "platform_metrics": (
+                    telemetry.platform_metrics if telemetry.platform_metrics else {}
+                ),
+                "platform_scores": platform_scores,
                 "score": score,
                 "hotkey": self.validator.keypair.ss58_address,
                 "uid": validator_node_id,

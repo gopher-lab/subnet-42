@@ -95,29 +95,78 @@ class MinerAPI:
                 f"  Score: \033[33m{payload['score']:.4f}\033[0m\n"
             )
 
+            # Display platform scores if available
+            platform_scores_display = ""
+            if "platform_scores" in payload:
+                platform_scores_display = (
+                    "\n\033[36m"
+                    "====================================\n"
+                    "        PLATFORM SCORE BREAKDOWN    \n"
+                    "====================================\033[0m\n\n"
+                )
+
+                total_weighted_score = 0
+                for platform, score_data in payload["platform_scores"].items():
+                    score = score_data.get("score", 0)
+                    weight = score_data.get("weight", 0)
+                    weighted_score = score_data.get("weighted_score", 0)
+                    total_weighted_score += weighted_score
+
+                    platform_scores_display += (
+                        f"  \033[33m{platform.upper()}\033[0m:\n"
+                        f"    - Score: {score:.4f}\n"
+                        f"    - Weight: {weight:.1%}\n"
+                        f"    - Weighted Score: {weighted_score:.4f}\n\n"
+                    )
+
+                platform_scores_display += (
+                    f"  \033[32mTotal Weighted Score: "
+                    f"{total_weighted_score:.4f}\033[0m\n"
+                )
+
+            # Display platform metrics if available
+            platform_metrics_display = ""
+            if "platform_metrics" in payload:
+                platform_metrics = payload["platform_metrics"]
+                if platform_metrics:
+                    platform_metrics_display = (
+                        "\n\033[32m"
+                        "====================================\n"
+                        "       PLATFORM METRICS BREAKDOWN  \n"
+                        "====================================\033[0m\n\n"
+                    )
+
+                    for platform, metrics in platform_metrics.items():
+                        platform_metrics_display += (
+                            f"  \033[33m{platform.upper()}\033[0m:\n"
+                        )
+                        for metric_name, metric_value in metrics.items():
+                            platform_metrics_display += (
+                                f"    - {metric_name}: {metric_value}\n"
+                            )
+                        platform_metrics_display += "\n"
+
+            # Legacy telemetry display (for backward compatibility and timing info)
             telemetry = payload["telemetry"]
             formatted_telemetry = (
-                f"  Web Success: {telemetry.get('web_success', 'N/A')}\n"
-                f"  Twitter Stats:\n"
-                f"    - Returned Tweets: {telemetry.get('twitter_returned_tweets', 'N/A')}\n"
-                f"    - Returned Profiles: {telemetry.get('twitter_returned_profiles', 'N/A')}\n"
-                f"    - Errors: {telemetry.get('twitter_errors', 'N/A')}\n"
-                f"    - Auth Errors: {telemetry.get('twitter_auth_errors', 'N/A')}\n"
-                f"    - Rate Limit Errors: {telemetry.get('twitter_ratelimit_errors', 'N/A')}\n"
-                f"  Web Errors: {telemetry.get('web_errors', 'N/A')}\n"
                 f"  Timing:\n"
                 f"    - Boot Time: {telemetry.get('boot_time', 'N/A')}\n"
                 f"    - Last Operation: {telemetry.get('last_operation_time', 'N/A')}\n"
                 f"    - Current Time: {telemetry.get('current_time', 'N/A')}\n"
             )
 
-            logger.info(
-                f"\n\033[32m"
-                f"====================================\n"
-                f"    TELEMETRY METRICS FOR PERIOD    \n"
-                f"====================================\033[0m\n\n"
-                f"{formatted_telemetry}"
-            )
+            # Display all information
+            logger.info(platform_scores_display)
+            logger.info(platform_metrics_display)
+
+            if formatted_telemetry.strip():
+                logger.info(
+                    f"\n\033[32m"
+                    f"====================================\n"
+                    f"         TIMING INFORMATION         \n"
+                    f"====================================\033[0m\n\n"
+                    f"{formatted_telemetry}"
+                )
             return {"status": "success"}
         except Exception as e:
             logger.error(f"\n\033[31mError processing score report: {str(e)}\033[0m")

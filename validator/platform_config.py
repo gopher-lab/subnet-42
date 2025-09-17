@@ -64,7 +64,7 @@ class PlatformManager:
         self.platforms: Dict[str, PlatformConfig] = {
             "twitter": PlatformConfig(
                 name="twitter",
-                emission_weight=0.7,  # 70% of emissions
+                emission_weight=0.5,  # 50% of emissions
                 metrics=[
                     "scrapes",
                     "returned_tweets",
@@ -129,6 +129,18 @@ class PlatformManager:
                 field_mappings={
                     "web_success": "success",
                     "web_errors": "errors",
+                },
+            ),
+            "reddit": PlatformConfig(
+                name="reddit",
+                emission_weight=0.2,  # 20% of emissions
+                metrics=["reddit_returned_items", "reddit_errors", "reddit_queries"],
+                error_metrics=["reddit_errors"],
+                success_metrics=["reddit_returned_items"],
+                field_mappings={
+                    "reddit_returned_items": "reddit_returned_items",
+                    "reddit_errors": "reddit_errors",
+                    "reddit_queries": "reddit_queries",
                 },
             ),
         }
