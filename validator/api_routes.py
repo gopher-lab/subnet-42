@@ -989,8 +989,6 @@ class ValidatorAPI:
                         "platform_score": round(platform_score, 4),
                         "emission_weight": platform_config.emission_weight,
                         "weighted_contribution": round(weighted_contribution, 4),
-                        "exceeds_error_threshold": error_rate
-                        > weights_manager.error_rate_threshold,
                     }
 
                     # Add to totals
@@ -2213,14 +2211,11 @@ class ValidatorAPI:
         """Return platform configuration and status information"""
         try:
             from validator.platform_config import PlatformManager
-            from validator.weights import WeightsManager
             import time
 
             manager = PlatformManager()
 
-            # Use the actual validator's WeightsManager (no mocking needed!)
-            weights_manager = WeightsManager(self.validator)
-            global_error_threshold = weights_manager.error_rate_threshold
+            # Initialize platform manager
 
             platforms = {}
 
@@ -2233,7 +2228,6 @@ class ValidatorAPI:
                     "success_metrics": config.success_metrics,
                     "error_metrics": config.error_metrics,
                     "all_metrics": config.metrics,
-                    "error_threshold": global_error_threshold,
                 }
 
             return {
@@ -2242,7 +2236,6 @@ class ValidatorAPI:
                 "total_emission_weight": sum(
                     p["emission_weight"] for p in platforms.values()
                 ),
-                "global_error_threshold": global_error_threshold,
                 "timestamp": int(time.time()),
             }
         except Exception as e:
@@ -2570,7 +2563,6 @@ class ValidatorAPI:
                         "emission_weight": platform_config.emission_weight,
                         "success_metrics": platform_config.success_metrics,
                         "error_metrics": platform_config.error_metrics,
-                        "error_threshold": weights_manager.error_rate_threshold,
                     },
                     "performance_metrics": {
                         "total_nodes": len(delta_telemetry),
@@ -2578,8 +2570,6 @@ class ValidatorAPI:
                         "total_success_operations": 0,
                         "total_errors": 0,
                         "success_rate": 0.0,
-                        "nodes_above_threshold": 0,
-                        "nodes_below_threshold": 0,
                     },
                     "top_performers": [],
                     "health_status": "unknown",
@@ -2621,20 +2611,11 @@ class ValidatorAPI:
                         "total_errors"
                     ] += error_count
 
-                    # Calculate error rate per hour for threshold check
+                    # Calculate error rate per hour for reference only (no punishment)
                     time_span = getattr(node_data, "time_span_seconds", 3600) / 3600
                     error_rate = (
                         error_count / time_span if time_span > 0 else error_count
                     )
-
-                    if error_rate <= weights_manager.error_rate_threshold:
-                        performance_analysis[platform_name]["performance_metrics"][
-                            "nodes_above_threshold"
-                        ] += 1
-                    else:
-                        performance_analysis[platform_name]["performance_metrics"][
-                            "nodes_below_threshold"
-                        ] += 1
 
                     if success_count > 0:
                         node_performances.append(

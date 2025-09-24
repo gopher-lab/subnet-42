@@ -91,7 +91,6 @@ class WeightsManager:
         validator: "Validator",
         tweets_weight: float = 0.6,
         error_quality_weight: float = 0.4,
-        error_rate_threshold: float = 10.0,
     ):
         """
         Initialize the WeightsManager with a validator instance and
@@ -103,13 +102,10 @@ class WeightsManager:
                              (default: 0.6)
         :param error_quality_weight: Weight for error quality score component
                                     (default: 0.4)
-        :param error_rate_threshold: Maximum errors per hour allowed before
-                                   scoring 0 (default: 10.0)
         """
         self.validator = validator
         self.tweets_weight = tweets_weight
         self.error_quality_weight = error_quality_weight
-        self.error_rate_threshold = error_rate_threshold
 
         # Initialize platform manager for multi-platform scoring
         self.platform_manager = PlatformManager()

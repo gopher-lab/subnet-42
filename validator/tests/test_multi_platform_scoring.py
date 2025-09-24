@@ -229,7 +229,7 @@ class TestMultiPlatformScoring(unittest.TestCase):
         self.assertGreater(tiktok_score, 0.0)
 
     def test_calculate_platform_score_high_error_rate(self):
-        """Test that high error rates result in zero score."""
+        """High error rates no longer zero the score (success-only)."""
         node = NodeData(
             hotkey="test_hotkey",
             worker_id="test_worker",
@@ -260,7 +260,8 @@ class TestMultiPlatformScoring(unittest.TestCase):
         node.time_span_seconds = 3600  # 1 hour, 75 errors/hour > threshold
 
         score = self.weights_manager.calculate_platform_score(node, "twitter")
-        self.assertEqual(score, 0.0)
+        # Score should reflect success metrics regardless of errors
+        self.assertGreater(score, 0.0)
 
     def test_calculate_platform_score_unknown_platform(self):
         """Test handling of unknown platform names."""

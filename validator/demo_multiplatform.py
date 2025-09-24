@@ -305,7 +305,6 @@ def main():
     print("\nKey Features Demonstrated:")
     print("✓ Platform configuration with 90/10 Twitter/TikTok split")
     print("✓ Individual platform scoring")
-    print("✓ Error rate threshold enforcement")
     print("✓ Multi-platform emission weight distribution")
     print("✓ Backward compatibility with existing metrics")
     print("\nImplementation Status:")
@@ -313,7 +312,7 @@ def main():
     print("✓ PlatformManager class")
     print("✓ NodeData platform_metrics field")
     print("✓ Multi-platform scoring in WeightsManager")
-    print("✓ Platform-specific error thresholds")
+    print("✓ Error rates tracked for observability (no score punishment)")
 
 
 if __name__ == "__main__":
