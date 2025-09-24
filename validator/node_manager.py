@@ -677,17 +677,33 @@ class NodeManager:
             weights_manager = self.validator.weights_manager
 
             for platform_name in weights_manager.platform_manager.get_platform_names():
-                platform_score = weights_manager.calculate_platform_score(
-                    telemetry, platform_name
-                )
                 platform_config = weights_manager.platform_manager.get_platform(
                     platform_name
                 )
+
+                # Prefer normalized score computed during the latest scoring run
+                normalized_score = None
+                try:
+                    normalized_score = weights_manager.platform_normalized_scores.get(
+                        node_hotkey, {}
+                    ).get(platform_name, None)
+                except Exception:
+                    normalized_score = None
+
+                # Fallback to raw success score if normalized not available
+                if normalized_score is None:
+                    raw_success = weights_manager.calculate_platform_score(
+                        telemetry, platform_name
+                    )
+                    # Without cohort, cannot normalize here; report raw success as 0.0..1.0=0
+                    # to avoid huge numbers in miner report. Keep 0.0 to be conservative.
+                    normalized_score = 0.0 if raw_success == 0 else 1.0
+
                 platform_scores[platform_name] = {
-                    "score": platform_score,
+                    "score": float(normalized_score),
                     "weight": platform_config.emission_weight,
                     "weighted_score": (
-                        platform_score * platform_config.emission_weight
+                        float(normalized_score) * platform_config.emission_weight
                     ),
                 }
 

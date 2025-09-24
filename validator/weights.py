@@ -114,6 +114,10 @@ class WeightsManager:
         # Initialize platform manager for multi-platform scoring
         self.platform_manager = PlatformManager()
 
+        # Latest normalized per-platform scores for reporting
+        # Structure: { hotkey: { platform_name: normalized_score } }
+        self.platform_normalized_scores = {}
+
         logger.info(
             f"Initialized WeightsManager with weights: "
             f"tweets={tweets_weight}, error_quality={error_quality_weight}, "
@@ -123,10 +127,7 @@ class WeightsManager:
             f"Platform manager initialized with {len(self.platform_manager.get_platform_names())} platforms"
         )
 
-        # Ensure weights sum to 1.0
-        total_weight = self.tweets_weight + self.error_quality_weight
-        if abs(total_weight - 1.0) > 1e-6:
-            raise ValueError(f"Scoring weights must sum to 1.0, got {total_weight}")
+        # Note: legacy weights are deprecated and no longer used in calculations
 
     def _convert_timestamp_to_int(self, timestamp) -> int:
         """
@@ -163,11 +164,11 @@ class WeightsManager:
 
     def calculate_platform_score(self, node: NodeData, platform_name: str) -> float:
         """
-        Calculate the score for a single platform for a given node.
+        Calculate the raw success-only score for a single platform for a given node.
 
         :param node: NodeData object containing platform metrics
         :param platform_name: Name of the platform to score
-        :return: Normalized platform score (0.0 to 1.0)
+        :return: Raw success score (non-normalized)
         """
         if not hasattr(node, "platform_metrics") or not node.platform_metrics:
             logger.debug(f"Node {node.hotkey} has no platform metrics")
@@ -186,51 +187,12 @@ class WeightsManager:
             logger.warning(f"Unknown platform: {platform_name}")
             return 0.0
 
-        # Calculate success metrics
+        # Calculate success metrics only; errors do not penalize
         success_score = 0.0
         for metric in platform_config.success_metrics:
             success_score += platform_metrics.get(metric, 0)
 
-        # Calculate error rate
-        error_count = 0
-        for metric in platform_config.error_metrics:
-            error_count += platform_metrics.get(metric, 0)
-
-        # Calculate time span for error rate calculation
-        time_span_seconds = getattr(node, "time_span_seconds", 0)
-        if time_span_seconds > 0:
-            hours = time_span_seconds / 3600
-            error_rate = error_count / hours
-        else:
-            error_rate = float("inf") if error_count > 0 else 0.0
-
-        # Apply error rate threshold
-        if error_rate > self.error_rate_threshold:
-            logger.debug(
-                f"Node {node.hotkey} platform {platform_name} exceeds error threshold: "
-                f"{error_rate:.2f} errors/hour"
-            )
-            return 0.0
-
-        # Convert error rate to quality score
-        error_quality = 1.0 / (1.0 + error_rate)
-
-        # BUG FIX: Only give error quality score when there's actual activity
-        # If no success metrics, error quality should be 0 (inactive miners get 0 score)
-        if success_score == 0:
-            error_quality = 0.0
-            logger.debug(
-                f"Node {node.hotkey} platform {platform_name}: No success metrics, "
-                f"setting error_quality to 0 (inactive miner)"
-            )
-
-        # Combine success and error quality scores
-        combined_score = (
-            success_score * self.tweets_weight
-            + error_quality * self.error_quality_weight
-        )
-
-        return float(combined_score)
+        return float(success_score)
 
     def _update_platform_metrics(self, delta_node_data: List[NodeData]) -> None:
         """
@@ -568,28 +530,60 @@ class WeightsManager:
         logger.debug("Updating platform metrics for delta node data")
         self._update_platform_metrics(delta_node_data)
 
-        # Calculate multi-platform scores
-        logger.debug("Calculating multi-platform scores")
+        # Calculate multi-platform normalized success-only scores
+        logger.debug("Calculating multi-platform normalized success-only scores")
+
+        # Prepare structure for normalized platform scores per node
+        self.platform_normalized_scores = {node.hotkey: {} for node in delta_node_data}
+
+        # For each platform, compute raw success scores across nodes, then normalize to [0,1]
+        platform_names = self.platform_manager.get_platform_names()
+        platform_to_raw_scores = {
+            name: np.zeros(len(delta_node_data)) for name in platform_names
+        }
+
+        # Collect raw success scores per platform
+        for idx, node in enumerate(delta_node_data):
+            for platform_name in platform_names:
+                raw_success = self.calculate_platform_score(node, platform_name)
+                platform_to_raw_scores[platform_name][idx] = raw_success
+
+        # Normalize per-platform and compute weighted sums
         combined_scores = []
-
-        for node in delta_node_data:
+        for idx, node in enumerate(delta_node_data):
             total_weighted_score = 0.0
+            for platform_name in platform_names:
+                raw_array = platform_to_raw_scores[platform_name]
+                max_val = float(np.max(raw_array)) if raw_array.size > 0 else 0.0
+                min_val = float(np.min(raw_array)) if raw_array.size > 0 else 0.0
 
-            # Calculate score for each platform and apply emission weights
-            for platform_name in self.platform_manager.get_platform_names():
+                if max_val - min_val > 0:
+                    normalized_array = (raw_array - min_val) / (max_val - min_val)
+                else:
+                    # All equal; no differentiation
+                    normalized_array = np.zeros_like(raw_array)
+
+                normalized_score = float(normalized_array[idx])
+
+                # Store for reporting
+                self.platform_normalized_scores[node.hotkey][
+                    platform_name
+                ] = normalized_score
+
                 platform_config = self.platform_manager.get_platform(platform_name)
-                platform_score = self.calculate_platform_score(node, platform_name)
-                weighted_score = platform_score * platform_config.emission_weight
+                weighted_score = normalized_score * platform_config.emission_weight
                 total_weighted_score += weighted_score
 
                 logger.debug(
                     f"Node {node.hotkey} platform {platform_name}: "
-                    f"score={platform_score:.4f}, weighted={weighted_score:.4f}"
+                    f"raw={platform_to_raw_scores[platform_name][idx]:.4f}, "
+                    f"normalized={normalized_score:.4f}, "
+                    f"weighted={weighted_score:.4f}"
                 )
 
             combined_scores.append(total_weighted_score)
             logger.debug(
-                f"Node {node.hotkey} total weighted score: {total_weighted_score:.4f}"
+                f"Node {node.hotkey} total weighted score (pre-kurtosis): {total_weighted_score:.4f}"
             )
 
         # Apply kurtosis curve to final scores

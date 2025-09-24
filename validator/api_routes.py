@@ -707,71 +707,71 @@ class ValidatorAPI:
                 },
             }
 
-            # Calculate platform-specific scores and rankings
+            # Calculate platform-specific normalized scores and rankings
             total_weighted_score = 0.0
 
-            for platform_name in platform_manager.get_platform_names():
+            # Compute normalized arrays per platform across delta_data
+            platform_names = platform_manager.get_platform_names()
+            platform_to_raw = {name: [] for name in platform_names}
+            for node in delta_data:
+                for p in platform_names:
+                    platform_to_raw[p].append(
+                        weights_manager.calculate_platform_score(node, p)
+                    )
+
+            platform_to_raw = {k: np.array(v) for k, v in platform_to_raw.items()}
+            platform_to_norm = {}
+            for p, arr in platform_to_raw.items():
+                if arr.size == 0:
+                    platform_to_norm[p] = arr
+                    continue
+                max_val = float(np.max(arr))
+                min_val = float(np.min(arr))
+                if max_val - min_val > 0:
+                    platform_to_norm[p] = (arr - min_val) / (max_val - min_val)
+                else:
+                    platform_to_norm[p] = np.zeros_like(arr)
+
+            # Find target index
+            target_index = next(
+                (i for i, n in enumerate(delta_data) if n.hotkey == hotkey), -1
+            )
+
+            for platform_name in platform_names:
                 platform_config = platform_manager.get_platform(platform_name)
 
-                # Calculate score for target node
-                target_platform_score = weights_manager.calculate_platform_score(
-                    target_node, platform_name
+                target_platform_score = (
+                    float(platform_to_norm[platform_name][target_index])
+                    if target_index >= 0 and platform_to_norm[platform_name].size > 0
+                    else 0.0
                 )
                 weighted_contribution = (
                     target_platform_score * platform_config.emission_weight
                 )
                 total_weighted_score += weighted_contribution
 
-                # Calculate scores for all nodes for ranking
-                all_platform_scores = []
-                for node in delta_data:
-                    score = weights_manager.calculate_platform_score(
-                        node, platform_name
-                    )
-                    all_platform_scores.append(score)
-
-                # Calculate rankings
-                all_platform_scores = np.array(all_platform_scores)
-                target_rank = np.sum(all_platform_scores > target_platform_score) + 1
+                # Rankings on normalized scores
+                all_platform_scores = platform_to_norm[platform_name]
+                target_rank = (
+                    int(np.sum(all_platform_scores > target_platform_score)) + 1
+                    if all_platform_scores.size > 0
+                    else len(delta_data)
+                )
                 percentile = (
-                    (len(all_platform_scores) - target_rank + 1)
-                    / len(all_platform_scores)
-                ) * 100
+                    (
+                        (len(all_platform_scores) - target_rank + 1)
+                        / len(all_platform_scores)
+                    )
+                    * 100
+                    if all_platform_scores.size > 0 and len(all_platform_scores) > 0
+                    else 0.0
+                )
 
-                # Get target node's platform metrics
+                # Metric totals (for display only)
                 target_metrics = target_node.platform_metrics.get(platform_name, {})
-
-                # Calculate success and error details
                 success_total = sum(
                     target_metrics.get(metric, 0)
                     for metric in platform_config.success_metrics
-                )
-                error_total = sum(
-                    target_metrics.get(metric, 0)
-                    for metric in platform_config.error_metrics
-                )
-
-                # Calculate error rate
-                time_span_seconds = getattr(target_node, "time_span_seconds", 0)
-                if time_span_seconds > 0:
-                    hours_span = time_span_seconds / 3600
-                    error_rate = error_total / hours_span
-                else:
-                    error_rate = float("inf") if error_total > 0 else 0.0
-
-                error_quality = (
-                    1.0 / (1.0 + error_rate) if error_rate != float("inf") else 0.0
-                )
-
-                # BUG FIX: Only give error quality score when there's actual activity
-                # If no success metrics, error quality should be 0 (inactive miners get 0 score)
-                if success_total == 0:
-                    error_quality = 0.0
-
-                # Combined score calculation (tweets_weight * success + error_quality_weight * error_quality)
-                combined_score = (
-                    weights_manager.tweets_weight * success_total
-                    + weights_manager.error_quality_weight * error_quality
                 )
 
                 breakdown["platforms"][platform_name] = {
@@ -788,41 +788,22 @@ class ValidatorAPI:
                             metric: target_metrics.get(metric, 0)
                             for metric in platform_config.success_metrics
                         },
-                        "error_metrics": {
-                            metric: target_metrics.get(metric, 0)
-                            for metric in platform_config.error_metrics
-                        },
                         "success_total": success_total,
-                        "error_total": error_total,
-                        "error_rate_per_hour": round(
-                            error_rate if error_rate != float("inf") else 0, 2
-                        ),
-                        "error_quality_score": round(error_quality, 4),
-                        "exceeds_error_threshold": error_rate
-                        > weights_manager.error_rate_threshold,
-                    },
-                    "score_calculation": {
-                        "success_component": round(
-                            weights_manager.tweets_weight * success_total, 4
-                        ),
-                        "error_quality_component": round(
-                            weights_manager.error_quality_weight * error_quality, 4
-                        ),
-                        "raw_combined_score": round(combined_score, 4),
-                        "explanation": f"({weights_manager.tweets_weight} × {success_total}) + ({weights_manager.error_quality_weight} × {round(error_quality, 4)}) = {round(combined_score, 4)}",
                     },
                 }
 
-            # Calculate final score with kurtosis
+            # Calculate final score with kurtosis using normalized platform sums
             all_combined_scores = []
-            for node in delta_data:
+            for idx, node in enumerate(delta_data):
                 node_total = 0.0
-                for platform_name in platform_manager.get_platform_names():
+                for platform_name in platform_names:
                     platform_config = platform_manager.get_platform(platform_name)
-                    platform_score = weights_manager.calculate_platform_score(
-                        node, platform_name
+                    norm_score = (
+                        float(platform_to_norm[platform_name][idx])
+                        if platform_to_norm[platform_name].size > 0
+                        else 0.0
                     )
-                    node_total += platform_score * platform_config.emission_weight
+                    node_total += norm_score * platform_config.emission_weight
                 all_combined_scores.append(node_total)
 
             # Apply kurtosis to get final scores
