@@ -110,7 +110,7 @@ class Validator:
             task2 = asyncio.create_task(
                 self.background_tasks.set_weights_loop(WEIGHTS_LOOP_CADENCE_SECONDS)
             )
-            task3 = asyncio.create_task(self.background_tasks.update_tee(60 * 60))
+            task3 = asyncio.create_task(self.background_tasks.update_tee(60 * 5))
             task4 = asyncio.create_task(self.background_tasks.telemetry_loop(60 * 10))
             task5 = asyncio.create_task(self.background_tasks.monitor_cleanup_loop())
             task6 = asyncio.create_task(self._cached_nats_loop())
