@@ -260,42 +260,24 @@ class TestProcessMonitoring:
         mock_validator.metagraph.nodes = {"hotkey1": Mock(node_id=1)}
         mock_validator.node_manager.send_score_report = AsyncMock()
 
-        # Test different weight configurations
-        weights_manager_tweets_heavy = WeightsManager(
-            mock_validator, tweets_weight=0.8, error_quality_weight=0.2
-        )
-        weights_manager_error_heavy = WeightsManager(
-            mock_validator, tweets_weight=0.2, error_quality_weight=0.8
-        )
+        # Single configuration (weights manager no longer supports legacy weight configs)
+        weights_manager = WeightsManager(mock_validator)
 
-        # Calculate weights with both configurations
-        _, weights_tweets_heavy = await weights_manager_tweets_heavy.calculate_weights(
-            [test_node], simulation=True
-        )
-        _, weights_error_heavy = await weights_manager_error_heavy.calculate_weights(
+        # Calculate weights
+        _, weights_single = await weights_manager.calculate_weights(
             [test_node], simulation=True
         )
 
-        # Both should produce valid weights
-        assert len(weights_tweets_heavy) == 1
-        assert len(weights_error_heavy) == 1
-        assert 0 <= weights_tweets_heavy[0] <= 1
-        assert 0 <= weights_error_heavy[0] <= 1
+        # Should produce a valid weight
+        assert len(weights_single) == 1
+        assert 0 <= weights_single[0] <= 1
 
     def test_weights_validation(self):
         """Test that weight validation works correctly"""
         mock_validator = Mock()
 
-        # Valid weights should work
-        WeightsManager(mock_validator, tweets_weight=0.6, error_quality_weight=0.4)
-        WeightsManager(mock_validator, tweets_weight=0.5, error_quality_weight=0.5)
-
-        # Invalid weights should raise ValueError
-        with pytest.raises(ValueError):
-            WeightsManager(mock_validator, tweets_weight=0.6, error_quality_weight=0.5)
-
-        with pytest.raises(ValueError):
-            WeightsManager(mock_validator, tweets_weight=0.3, error_quality_weight=0.3)
+        # No legacy weights to validate; creation should succeed
+        WeightsManager(mock_validator)
 
     def test_error_rate_edge_cases(self):
         """Test error rate calculation with edge cases"""

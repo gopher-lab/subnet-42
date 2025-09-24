@@ -89,8 +89,6 @@ class WeightsManager:
     def __init__(
         self,
         validator: "Validator",
-        tweets_weight: float = 0.6,
-        error_quality_weight: float = 0.4,
     ):
         """
         Initialize the WeightsManager with a validator instance and
@@ -98,14 +96,8 @@ class WeightsManager:
 
         :param validator: The validator instance to be used for weight
                          calculations.
-        :param tweets_weight: Weight for Twitter tweets returned component
-                             (default: 0.6)
-        :param error_quality_weight: Weight for error quality score component
-                                    (default: 0.4)
         """
         self.validator = validator
-        self.tweets_weight = tweets_weight
-        self.error_quality_weight = error_quality_weight
 
         # Initialize platform manager for multi-platform scoring
         self.platform_manager = PlatformManager()
@@ -115,8 +107,7 @@ class WeightsManager:
         self.platform_normalized_scores = {}
 
         logger.info(
-            "Initialized WeightsManager: success-only scoring with per-platform normalization; "
-            "legacy tweets/error weights retained for compatibility but not used."
+            "Initialized WeightsManager: success-only scoring with per-platform normalization."
         )
         logger.info(
             f"Platform manager initialized with {len(self.platform_manager.get_platform_names())} platforms"

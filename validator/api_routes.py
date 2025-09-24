@@ -965,11 +965,8 @@ class ValidatorAPI:
                     if success_total == 0:
                         error_quality = 0.0
 
-                    # Combined score calculation
-                    combined_score = (
-                        weights_manager.tweets_weight * success_total
-                        + weights_manager.error_quality_weight * error_quality
-                    )
+                    # Combined score calculation (legacy formula removed)
+                    combined_score = success_total
 
                     # Get platform score from actual scoring system
                     platform_score = weights_manager.calculate_platform_score(
