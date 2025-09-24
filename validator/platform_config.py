@@ -64,41 +64,28 @@ class PlatformManager:
         self.platforms: Dict[str, PlatformConfig] = {
             "twitter": PlatformConfig(
                 name="twitter",
-                emission_weight=0.5,  # 50% of emissions
+                emission_weight=0.35,
                 metrics=[
                     "scrapes",
-                    "returned_tweets",
-                    "auth_errors",
+                    "tweets",
                     "errors",
+                    "auth_errors",
                     "ratelimit_errors",
                 ],
-                error_metrics=["auth_errors", "errors", "ratelimit_errors"],
-                success_metrics=["returned_tweets"],
+                error_metrics=["errors", "auth_errors", "ratelimit_errors"],
+                success_metrics=["tweets"],
                 field_mappings={
                     # Map raw telemetry field names to clean platform metric names
                     "twitter_scrapes": "scrapes",
-                    "twitter_returned_tweets": "returned_tweets",
-                    "twitter_auth_errors": "auth_errors",
+                    "twitter_returned_tweets": "tweets",
                     "twitter_errors": "errors",
+                    "twitter_auth_errors": "auth_errors",
                     "twitter_ratelimit_errors": "ratelimit_errors",
-                    "twitter_returned_other": "returned_other",
                 },
             ),
-            "twitter-profile-apify": PlatformConfig(
-                name="twitter-profile-apify",
-                emission_weight=0,  # 0% of emissions
-                metrics=[
-                    "returned_profiles",
-                ],
-                error_metrics=[],
-                success_metrics=["returned_profiles"],
-                field_mappings={
-                    "twitter_returned_profiles": "returned_profiles",
-                },
-            ),
-            "twitter-followers-apify": PlatformConfig(
-                name="twitter-followers-apify",
-                emission_weight=0.2,  # 20% of emissions
+            "twitter-apify": PlatformConfig(
+                name="twitter-apify",
+                emission_weight=0.15,
                 metrics=[
                     "returned_followers",
                 ],
@@ -108,9 +95,9 @@ class PlatformManager:
                     "twitter_returned_followers": "returned_followers",
                 },
             ),
-            "tiktok": PlatformConfig(
-                name="tiktok",
-                emission_weight=0.1,  # 10% of emissions
+            "tiktok-transcription": PlatformConfig(
+                name="tiktok-transcription",
+                emission_weight=0.05,
                 metrics=["transcription_success", "transcription_errors"],
                 error_metrics=["transcription_errors"],
                 success_metrics=["transcription_success"],
@@ -120,27 +107,43 @@ class PlatformManager:
                     "tiktok_transcription_errors": "transcription_errors",
                 },
             ),
+            "tiktok-search": PlatformConfig(
+                name="tiktok-search",
+                emission_weight=0.15,
+                metrics=["queries", "videos", "errors"],
+                error_metrics=["errors"],
+                success_metrics=["videos"],
+                field_mappings={
+                    # Map raw telemetry field names to clean platform metric names
+                    "tiktok_queries": "queries",
+                    "tiktok_returned_videos": "videos",
+                    "tiktok_errors": "errors",
+                },
+            ),
             "web": PlatformConfig(
                 name="web",
-                emission_weight=0.0,  # Not counted in emissions yet, but tracked
-                metrics=["success", "errors"],
+                emission_weight=0.15,
+                metrics=["queries", "pages", "errors"],
                 error_metrics=["errors"],
-                success_metrics=["success"],
+                success_metrics=["pages"],
                 field_mappings={
-                    "web_success": "success",
+                    # Map raw telemetry field names to clean platform metric names
+                    "web_queries": "queries",
+                    "web_processed_pages": "pages",
                     "web_errors": "errors",
                 },
             ),
             "reddit": PlatformConfig(
                 name="reddit",
-                emission_weight=0.2,  # 20% of emissions
-                metrics=["reddit_returned_items", "reddit_errors", "reddit_queries"],
-                error_metrics=["reddit_errors"],
-                success_metrics=["reddit_returned_items"],
+                emission_weight=0.15,
+                metrics=["items", "errors", "queries"],
+                error_metrics=["errors"],
+                success_metrics=["items"],
                 field_mappings={
-                    "reddit_returned_items": "reddit_returned_items",
-                    "reddit_errors": "reddit_errors",
-                    "reddit_queries": "reddit_queries",
+                    # Map raw telemetry field names to clean platform metric names
+                    "reddit_returned_items": "items",
+                    "reddit_errors": "errors",
+                    "reddit_queries": "queries",
                 },
             ),
         }
