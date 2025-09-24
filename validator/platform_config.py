@@ -87,24 +87,26 @@ class PlatformManager:
                 name="twitter-apify",
                 emission_weight=0.15,
                 metrics=[
-                    "returned_followers",
+                    "followers",
+                    "errors",
                 ],
-                error_metrics=[],
-                success_metrics=["returned_followers"],
+                error_metrics=["errors"],
+                success_metrics=["followers"],
                 field_mappings={
-                    "twitter_returned_followers": "returned_followers",
+                    "twitter_returned_followers": "followers",
+                    "twitter_errors": "errors",
                 },
             ),
             "tiktok-transcription": PlatformConfig(
                 name="tiktok-transcription",
                 emission_weight=0.05,
-                metrics=["transcription_success", "transcription_errors"],
-                error_metrics=["transcription_errors"],
-                success_metrics=["transcription_success"],
+                metrics=["transcriptions", "errors"],
+                error_metrics=["errors"],
+                success_metrics=["transcriptions"],
                 field_mappings={
                     # Map raw telemetry field names to clean platform metric names
-                    "tiktok_transcription_success": "transcription_success",
-                    "tiktok_transcription_errors": "transcription_errors",
+                    "tiktok_transcription_success": "transcriptions",
+                    "tiktok_transcription_errors": "errors",
                 },
             ),
             "tiktok-search": PlatformConfig(
