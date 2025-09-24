@@ -119,9 +119,8 @@ class WeightsManager:
         self.platform_normalized_scores = {}
 
         logger.info(
-            f"Initialized WeightsManager with weights: "
-            f"tweets={tweets_weight}, error_quality={error_quality_weight}, "
-            f"error_rate_threshold={error_rate_threshold}"
+            "Initialized WeightsManager: success-only scoring with per-platform normalization; "
+            "legacy tweets/error weights retained for compatibility but not used."
         )
         logger.info(
             f"Platform manager initialized with {len(self.platform_manager.get_platform_names())} platforms"

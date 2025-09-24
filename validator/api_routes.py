@@ -700,9 +700,8 @@ class ValidatorAPI:
                 "final_score": 0.0,
                 "global_ranking": {"position": 0, "percentile": 0.0},
                 "scoring_methodology": {
-                    "tweets_weight": weights_manager.tweets_weight,
-                    "error_quality_weight": weights_manager.error_quality_weight,
-                    "error_rate_threshold": weights_manager.error_rate_threshold,
+                    "type": "success_only_normalized",
+                    "description": "Per-platform successes normalized to [0,1], emission-weighted sum, then kurtosis",
                     "kurtosis_applied": True,
                 },
             }

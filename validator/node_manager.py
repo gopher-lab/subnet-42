@@ -676,6 +676,8 @@ class NodeManager:
             platform_scores = {}
             weights_manager = self.validator.weights_manager
 
+            total_weighted_score = 0.0
+
             for platform_name in weights_manager.platform_manager.get_platform_names():
                 platform_config = weights_manager.platform_manager.get_platform(
                     platform_name
@@ -690,21 +692,24 @@ class NodeManager:
                 except Exception:
                     normalized_score = None
 
-                # Fallback to raw success score if normalized not available
+                # Always compute raw success score for display
+                raw_success = weights_manager.calculate_platform_score(
+                    telemetry, platform_name
+                )
+
+                # Fallback to an indicative normalized value if unavailable
                 if normalized_score is None:
-                    raw_success = weights_manager.calculate_platform_score(
-                        telemetry, platform_name
-                    )
-                    # Without cohort, cannot normalize here; report raw success as 0.0..1.0=0
-                    # to avoid huge numbers in miner report. Keep 0.0 to be conservative.
                     normalized_score = 0.0 if raw_success == 0 else 1.0
 
+                weight = float(platform_config.emission_weight)
+                weighted_score = float(normalized_score) * weight
+                total_weighted_score += weighted_score
+
                 platform_scores[platform_name] = {
-                    "score": float(normalized_score),
-                    "weight": platform_config.emission_weight,
-                    "weighted_score": (
-                        float(normalized_score) * platform_config.emission_weight
-                    ),
+                    "score": float(raw_success),
+                    "normalized_score": float(normalized_score),
+                    "weight": weight,
+                    "weighted_score": weighted_score,
                 }
 
             payload = {
@@ -729,6 +734,7 @@ class NodeManager:
                     telemetry.platform_metrics if telemetry.platform_metrics else {}
                 ),
                 "platform_scores": platform_scores,
+                "total_weighted_score": float(total_weighted_score),
                 "score": score,
                 "hotkey": self.validator.keypair.ss58_address,
                 "uid": validator_node_id,
