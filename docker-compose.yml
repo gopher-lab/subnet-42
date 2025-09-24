@@ -1,6 +1,7 @@
 services:
   neuron:
-    profiles: ["miner", "miner-tee", "miner-tee-vpn", "validator", "validator-tee"]
+    profiles:
+      ["miner", "miner-tee", "miner-tee-vpn", "validator", "validator-tee"]
     image: masaengineering/subnet-42:latest
     pull_policy: always
     restart: unless-stopped
@@ -133,6 +134,7 @@ services:
         max-buffer-size: "4m"
 
   cookies-generator:
+    profiles: ["cookies"]
     image: cookie-generator:latest
     pull_policy: never
     build:
@@ -157,6 +159,7 @@ services:
         max-buffer-size: "4m"
 
   cookies-updater-docker:
+    profiles: ["cookies"]
     image: cookies-updater-docker:latest
     pull_policy: never
     build:
@@ -187,6 +190,7 @@ services:
         condition: service_completed_successfully
 
   cookies-updater-kubernetes:
+    profiles: ["cookies"]
     image: cookies-updater-kubernetes:latest
     pull_policy: never
     build:
@@ -215,7 +219,8 @@ services:
         condition: service_completed_successfully
 
   watchtower:
-    profiles: ["miner", "miner-tee", "miner-tee-vpn", "validator", "validator-tee"]
+    profiles:
+      ["miner", "miner-tee", "miner-tee-vpn", "validator", "validator-tee"]
     image: containrrr/watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
