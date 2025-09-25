@@ -93,7 +93,7 @@ class MinerAPI:
                 f"  Validator UID: {payload['uid']}\n"
                 f"  Validator Hotkey: {payload['hotkey']}\n"
                 f"  Final Score: \033[33m{payload['score']:.4f}\033[0m\n"
-                f"  Total Weighted Score: \033[34m{payload.get('total_weighted_score', 0.0):.4f}\033[0m\n"
+                f"  Total Normalized Weighted Score: \033[34m{payload.get('total_weighted_score', 0.0):.4f}\033[0m\n"
             )
 
             # Display platform scores if available
@@ -118,11 +118,11 @@ class MinerAPI:
                         f"    - Score: {raw_score:.4f}\n"
                         f"    - Normalized Score: {normalized:.4f}\n"
                         f"    - Weight: {weight:.1%}\n"
-                        f"    - Weighted Score: {weighted:.4f}\n\n"
+                        f"    - Normalized Weighted Score: {weighted:.4f}\n\n"
                     )
 
                 platform_scores_display += (
-                    f"  \033[32mTotal Weighted Score: "
+                    f"  \033[32mTotal Normalized Weighted Score: "
                     f"{payload.get('total_weighted_score', 0.0):.4f}\033[0m\n"
                 )
 

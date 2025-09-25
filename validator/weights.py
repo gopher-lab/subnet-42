@@ -182,40 +182,22 @@ class WeightsManager:
 
     def _update_platform_metrics(self, delta_node_data: List[NodeData]) -> None:
         """
-        Update platform_metrics for nodes based on their delta telemetry data.
-        This ensures backward compatibility and proper multi-platform scoring.
+        Populate node.platform_metrics from dynamic stats using PlatformManager mappings.
+        Removes hardcoded per-platform backfill.
         """
+        from validator.platform_config import PlatformManager
+
+        platform_manager = PlatformManager()
+
         for node in delta_node_data:
-            if not hasattr(node, "platform_metrics") or not node.platform_metrics:
-                node.platform_metrics = {}
-
-            # Update Twitter platform metrics from legacy fields
-            if (
-                node.twitter_returned_tweets > 0
-                or node.twitter_returned_profiles > 0
-                or node.twitter_auth_errors > 0
-                or node.twitter_errors > 0
-                or node.twitter_ratelimit_errors > 0
-            ):
-
-                node.platform_metrics["twitter"] = {
-                    "returned_tweets": node.twitter_returned_tweets,
-                    "returned_profiles": node.twitter_returned_profiles,
-                    "scrapes": node.twitter_scrapes,
-                    "auth_errors": node.twitter_auth_errors,
-                    "errors": node.twitter_errors,
-                    "ratelimit_errors": node.twitter_ratelimit_errors,
-                }
-
-            # Update TikTok platform metrics from new fields
-            tiktok_success = getattr(node, "tiktok_transcription_success", 0)
-            tiktok_errors = getattr(node, "tiktok_transcription_errors", 0)
-
-            if tiktok_success > 0 or tiktok_errors > 0:
-                node.platform_metrics["tiktok"] = {
-                    "transcription_success": tiktok_success,
-                    "transcription_errors": tiktok_errors,
-                }
+            stats = (
+                node.stats_json
+                if hasattr(node, "stats_json") and node.stats_json
+                else {}
+            )
+            node.platform_metrics = (
+                platform_manager.extract_platform_metrics_from_stats(stats)
+            )
 
     def _validate_source_id(self, record: NodeData) -> bool:
         """
@@ -479,27 +461,6 @@ class WeightsManager:
         :return: A tuple containing a list of node IDs and their corresponding
                  weights.
         """
-        # Log node data for debugging
-        for node in delta_node_data:
-            logger.debug(
-                f"Node {node.hotkey} data:"
-                f"\n\tWeb success: {node.web_success}"
-                f"\n\tTwitter returned tweets: {node.twitter_returned_tweets}"
-                f"\n\tTwitter returned profiles: "
-                f"{node.twitter_returned_profiles}"
-                f"\n\tTwitter errors: {node.twitter_errors}"
-                f"\n\tTwitter auth errors: {node.twitter_auth_errors}"
-                f"\n\tTwitter ratelimit errors: "
-                f"{node.twitter_ratelimit_errors}"
-                f"\n\tWeb errors: {node.web_errors}"
-                f"\n\tBoot time: {node.boot_time}"
-                f"\n\tLast operation time: {node.last_operation_time}"
-                f"\n\tCurrent time: {node.current_time}"
-                f"\n\tTotal errors: {getattr(node, 'total_errors', 0)}"
-                f"\n\tTime span (hours): "
-                f"{getattr(node, 'time_span_seconds', 0) / 3600:.2f}"
-            )
-
         logger.info("Starting weight calculation...")
         miner_scores = {}
 
