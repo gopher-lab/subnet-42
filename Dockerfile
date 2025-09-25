@@ -1,4 +1,4 @@
-# Use Python base image (use Google mirror to avoid Docker Hub rate limits)
+# Use Python base image
 FROM python:3.10-slim
 
 # Install dependencies
