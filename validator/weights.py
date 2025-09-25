@@ -185,9 +185,6 @@ class WeightsManager:
         Populate node.platform_metrics from dynamic stats using PlatformManager mappings.
         Removes hardcoded per-platform backfill.
         """
-        from validator.platform_config import PlatformManager
-
-        platform_manager = PlatformManager()
 
         for node in delta_node_data:
             stats = (
@@ -196,7 +193,7 @@ class WeightsManager:
                 else {}
             )
             node.platform_metrics = (
-                platform_manager.extract_platform_metrics_from_stats(stats)
+                self.platform_manager.extract_platform_metrics_from_stats(stats)
             )
 
     def _validate_source_id(self, record: NodeData) -> bool:
