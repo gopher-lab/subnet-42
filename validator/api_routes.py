@@ -2115,31 +2115,7 @@ class ValidatorAPI:
             # Convert NodeData objects to dictionaries
             telemetry_dict_list = []
             for data in telemetry_data:
-                telemetry_dict = {
-                    "hotkey": data.hotkey,
-                    "uid": data.uid,
-                    "timestamp": data.timestamp,
-                    "boot_time": data.boot_time,
-                    "last_operation_time": data.last_operation_time,
-                    "current_time": data.current_time,
-                    "twitter_auth_errors": data.twitter_auth_errors,
-                    "twitter_errors": data.twitter_errors,
-                    "twitter_ratelimit_errors": data.twitter_ratelimit_errors,
-                    "twitter_returned_other": data.twitter_returned_other,
-                    "twitter_returned_profiles": data.twitter_returned_profiles,
-                    "twitter_returned_tweets": data.twitter_returned_tweets,
-                    "twitter_scrapes": data.twitter_scrapes,
-                    "web_errors": data.web_errors,
-                    "web_success": data.web_success,
-                    "tiktok_transcription_success": getattr(
-                        data, "tiktok_transcription_success", 0
-                    ),
-                    "tiktok_transcription_errors": getattr(
-                        data, "tiktok_transcription_errors", 0
-                    ),
-                    "worker_id": data.worker_id if hasattr(data, "worker_id") else None,
-                }
-                telemetry_dict_list.append(telemetry_dict)
+                telemetry_dict_list.append(self._nodedata_to_dict(data))
 
             return {
                 "count": len(telemetry_dict_list),

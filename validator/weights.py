@@ -401,9 +401,6 @@ class WeightsManager:
                     platform_metrics=delta_platform_metrics,
                 )
 
-                # Populate legacy fields for backward compatibility
-                delta_data.populate_legacy_fields()
-
                 # Add custom attributes for error rate calculation
                 delta_data.time_span_seconds = total_time_span_seconds
 
