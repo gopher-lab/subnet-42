@@ -965,9 +965,6 @@ class ValidatorAPI:
                     if success_total == 0:
                         error_quality = 0.0
 
-                    # Combined score calculation (legacy formula removed)
-                    combined_score = success_total
-
                     # Get platform score from actual scoring system
                     platform_score = weights_manager.calculate_platform_score(
                         target_node, platform_name
