@@ -1,5 +1,5 @@
 # Use Python base image (use Google mirror to avoid Docker Hub rate limits)
-FROM mirror.gcr.io/library/python:3.10-slim
+FROM python:3.10-slim
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \

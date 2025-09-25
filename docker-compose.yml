@@ -221,7 +221,7 @@ services:
   watchtower:
     profiles:
       ["miner", "miner-tee", "miner-tee-vpn", "validator", "validator-tee"]
-    image: ghcr.io/containrrr/watchtower:latest
+    image: containrrr/watchtower:latest
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
