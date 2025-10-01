@@ -1490,9 +1490,7 @@ class ValidatorAPI:
             # Replace placeholders with actual values
             network = self.validator.config.SUBTENSOR_NETWORK.upper()
             content = content.replace("{{network}}", network)
-            content = content.replace(
-                "{{current_year}}", str(datetime.datetime.now().year)
-            )
+            content = content.replace("{{current_year}}", str(datetime.now().year))
 
             return HTMLResponse(content=content)
         except Exception as e:
@@ -1508,9 +1506,7 @@ class ValidatorAPI:
             # Replace placeholders with actual values
             network = self.validator.config.SUBTENSOR_NETWORK.upper()
             content = content.replace("{{network}}", network)
-            content = content.replace(
-                "{{current_year}}", str(datetime.datetime.now().year)
-            )
+            content = content.replace("{{current_year}}", str(datetime.now().year))
 
             return HTMLResponse(content=content)
         except Exception as e:
@@ -1526,9 +1522,7 @@ class ValidatorAPI:
             # Replace placeholders with actual values
             network = self.validator.config.SUBTENSOR_NETWORK.upper()
             content = content.replace("{{network}}", network)
-            content = content.replace(
-                "{{current_year}}", str(datetime.datetime.now().year)
-            )
+            content = content.replace("{{current_year}}", str(datetime.now().year))
 
             return HTMLResponse(content=content)
         except Exception as e:
@@ -1544,9 +1538,7 @@ class ValidatorAPI:
             # Replace placeholders with actual values
             network = self.validator.config.SUBTENSOR_NETWORK.upper()
             content = content.replace("{{network}}", network)
-            content = content.replace(
-                "{{current_year}}", str(datetime.datetime.now().year)
-            )
+            content = content.replace("{{current_year}}", str(datetime.now().year))
 
             return HTMLResponse(content=content)
         except Exception as e:
@@ -1562,9 +1554,7 @@ class ValidatorAPI:
             # Replace placeholders with actual values
             network = self.validator.config.SUBTENSOR_NETWORK.upper()
             content = content.replace("{{network}}", network)
-            content = content.replace(
-                "{{current_year}}", str(datetime.datetime.now().year)
-            )
+            content = content.replace("{{current_year}}", str(datetime.now().year))
 
             return HTMLResponse(content=content)
         except Exception as e:
