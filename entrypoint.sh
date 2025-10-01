@@ -27,6 +27,19 @@ fi
 # Re-enable command echoing for the rest of the script
 set -x
 
+# Run PostgreSQL migrations if PostgreSQL is configured
+if [ ! -z "${POSTGRES_HOST+x}" ]; then
+    echo "PostgreSQL host detected, running migrations..."
+    if python scripts/migrate_postgresql.py; then
+        echo "PostgreSQL migrations completed successfully"
+    else
+        echo "Warning: PostgreSQL migrations failed, continuing anyway..."
+        # Don't exit - let the app handle PostgreSQL connection issues
+    fi
+else
+    echo "No PostgreSQL host configured, skipping migrations"
+fi
+
 # Debug role
 echo "ROLE is set to: '$ROLE'"
 

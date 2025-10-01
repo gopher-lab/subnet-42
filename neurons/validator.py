@@ -81,6 +81,12 @@ class Validator:
         self.metagraph = Metagraph(netuid=self.netuid, substrate=self.substrate)
         self.metagraph.sync_nodes()
 
+        # Run startup migrations before initializing telemetry storage
+        from db.startup_migrations import run_all_startup_migrations
+
+        if not run_all_startup_migrations():
+            logger.warning("Some startup migrations failed, continuing anyway...")
+
         self.node_manager = NodeManager(validator=self)
         self.telemetry_storage = TelemetryStorage()
         self.scorer = NodeDataScorer(validator=self)
