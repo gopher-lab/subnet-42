@@ -100,9 +100,14 @@ class Validator:
         try:
             await self.http_client_manager.start()
             self.app = factory_app(debug=False)
+            is_testnet = self.config.SUBTENSOR_NETWORK == "test"
 
             # Start background tasks and track them for graceful shutdown
             logger.info("Starting background tasks...")
+
+            two_minutes = 60 * 2
+            ten_minutes = 60 * 10
+            sixty_minutes = 60 * 60
 
             task1 = asyncio.create_task(
                 self.background_tasks.sync_loop(SYNC_LOOP_CADENCE_SECONDS)
@@ -110,8 +115,17 @@ class Validator:
             task2 = asyncio.create_task(
                 self.background_tasks.set_weights_loop(WEIGHTS_LOOP_CADENCE_SECONDS)
             )
-            task3 = asyncio.create_task(self.background_tasks.update_tee(60 * 60))
-            task4 = asyncio.create_task(self.background_tasks.telemetry_loop(60 * 10))
+
+            task3 = asyncio.create_task(
+                self.background_tasks.update_tee(
+                    two_minutes if is_testnet else sixty_minutes
+                )
+            )
+            task4 = asyncio.create_task(
+                self.background_tasks.telemetry_loop(
+                    two_minutes if is_testnet else ten_minutes
+                )
+            )
             task5 = asyncio.create_task(self.background_tasks.monitor_cleanup_loop())
             task6 = asyncio.create_task(self._cached_nats_loop())
 

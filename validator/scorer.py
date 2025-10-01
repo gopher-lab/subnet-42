@@ -349,23 +349,33 @@ class NodeDataScorer:
                         platform_metrics=platform_metrics,
                     )
 
-                    # Populate legacy fields for backward compatibility
-                    telemetry_data.populate_legacy_fields()
                     logger.info(f"Storing telemetry for node {hotkey[:10]}...")
-                    twitter_stats = (
-                        f"Twitter stats for {hotkey[:10]}: "
-                        f"scrapes={telemetry_data.twitter_scrapes}, "
-                        f"profiles={telemetry_data.twitter_returned_profiles}, "
-                        f"tweets={telemetry_data.twitter_returned_tweets}"
-                    )
-                    logger.info(twitter_stats)
+                    # Log platform metrics dynamically using current mappings
+                    pm = telemetry_data.platform_metrics or {}
+                    if pm:
+                        try:
+                            from validator.platform_config import PlatformManager
 
-                    web_stats = (
-                        f"Web stats for {hotkey[:10]}: "
-                        f"success={telemetry_data.web_success}, "
-                        f"errors={telemetry_data.web_errors}"
-                    )
-                    logger.info(web_stats)
+                            manager = PlatformManager()
+                            platform_order = manager.get_platform_names()
+                        except Exception:
+                            platform_order = list(pm.keys())
+
+                        logger.info(
+                            f"Platform metrics for {hotkey[:10]}: {', '.join(platform_order)}"
+                        )
+
+                        for platform in platform_order:
+                            metrics = pm.get(platform, {})
+                            if not metrics:
+                                continue
+                            # Build a compact "k=v" string for all metrics
+                            metrics_str = ", ".join(
+                                f"{k}={v}" for k, v in metrics.items()
+                            )
+                            logger.info(
+                                f"  {platform}: {metrics_str if metrics_str else 'no metrics'}"
+                            )
 
                     logger.debug(f"telemetry for {hotkey}: {telemetry_data}")
 

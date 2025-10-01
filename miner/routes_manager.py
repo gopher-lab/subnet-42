@@ -92,7 +92,8 @@ class MinerAPI:
                 f"====================================\033[0m\n\n"
                 f"  Validator UID: {payload['uid']}\n"
                 f"  Validator Hotkey: {payload['hotkey']}\n"
-                f"  Score: \033[33m{payload['score']:.4f}\033[0m\n"
+                f"  Final Score: \033[33m{payload['score']:.4f}\033[0m\n"
+                f"  Total Normalized Weighted Score: \033[34m{payload.get('total_weighted_score', 0.0):.4f}\033[0m\n"
             )
 
             # Display platform scores if available
@@ -107,21 +108,22 @@ class MinerAPI:
 
                 total_weighted_score = 0
                 for platform, score_data in payload["platform_scores"].items():
-                    score = score_data.get("score", 0)
-                    weight = score_data.get("weight", 0)
-                    weighted_score = score_data.get("weighted_score", 0)
-                    total_weighted_score += weighted_score
+                    raw_score = score_data.get("score", 0.0)
+                    normalized = score_data.get("normalized_score", 0.0)
+                    weight = score_data.get("weight", 0.0)
+                    weighted = score_data.get("weighted_score", 0.0)
 
                     platform_scores_display += (
                         f"  \033[33m{platform.upper()}\033[0m:\n"
-                        f"    - Score: {score:.4f}\n"
+                        f"    - Score: {raw_score:.4f}\n"
+                        f"    - Normalized Score: {normalized:.4f}\n"
                         f"    - Weight: {weight:.1%}\n"
-                        f"    - Weighted Score: {weighted_score:.4f}\n\n"
+                        f"    - Normalized Weighted Score: {weighted:.4f}\n\n"
                     )
 
                 platform_scores_display += (
-                    f"  \033[32mTotal Weighted Score: "
-                    f"{total_weighted_score:.4f}\033[0m\n"
+                    f"  \033[32mTotal Normalized Weighted Score: "
+                    f"{payload.get('total_weighted_score', 0.0):.4f}\033[0m\n"
                 )
 
             # Display platform metrics if available

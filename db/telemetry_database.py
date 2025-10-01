@@ -43,26 +43,7 @@ class TelemetryDatabase:
             if "stats_json" not in columns:
                 cursor.execute("ALTER TABLE telemetry ADD COLUMN stats_json TEXT")
 
-            # Legacy: Keep old columns for backward compatibility during migration
-            legacy_columns = [
-                "twitter_auth_errors",
-                "twitter_errors",
-                "twitter_ratelimit_errors",
-                "twitter_returned_other",
-                "twitter_returned_profiles",
-                "twitter_returned_tweets",
-                "twitter_scrapes",
-                "web_errors",
-                "web_success",
-                "tiktok_transcription_success",
-                "tiktok_transcription_errors",
-            ]
-
-            for col in legacy_columns:
-                if col not in columns:
-                    cursor.execute(
-                        f"ALTER TABLE telemetry ADD COLUMN {col} INT DEFAULT 0"
-                    )
+            # Legacy columns removed: telemetry now uses JSON stats exclusively
 
             conn.commit()
 
