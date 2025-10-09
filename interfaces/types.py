@@ -123,6 +123,10 @@ class NodeData(JSONSerializable):
                             or metric_value < 0
                         ):
                             return False
+            elif key == "worker_version":
+                # Allow string or number for worker_version; do not enforce format here
+                if not isinstance(value, (str, int, float)):
+                    return False
             else:
                 # All other stats should be non-negative numbers
                 if not isinstance(value, (int, float)) or value < 0:

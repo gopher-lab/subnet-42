@@ -261,6 +261,15 @@ class NodeDataScorer:
             # Store raw platform metrics for later validation during delta calculation
             aggregated_stats["platform_metrics"] = stats_dict
 
+        # Always store worker_version in stats_json for downstream filtering
+        try:
+            worker_version = telemetry_result.get("worker_version")
+            if worker_version is not None:
+                aggregated_stats["worker_version"] = worker_version
+        except Exception:
+            # Non-fatal: if missing or malformed, skip storing
+            pass
+
         return aggregated_stats
 
     async def get_node_data(self):

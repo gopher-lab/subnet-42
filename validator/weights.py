@@ -201,6 +201,23 @@ class WeightsManager:
         Validate source ID for telemetry record during delta calculation.
         This replaces the validation that was previously done before storage.
         """
+        # First, enforce active worker version if available
+        try:
+            if hasattr(self.validator, "scorer") and hasattr(
+                self.validator.scorer, "active_worker_version"
+            ):
+                active_version = getattr(
+                    self.validator.scorer, "active_worker_version", None
+                )
+                if active_version is not None:
+                    version = None
+                    if hasattr(record, "stats_json") and record.stats_json:
+                        version = record.stats_json.get("worker_version")
+                    if version is None or str(version) != str(active_version):
+                        return False
+        except Exception:
+            # If anything goes wrong, fail closed (treat as invalid)
+            return False
         # Extract raw platform_metrics from stats_json for source ID validation
         # We need the raw platform_metrics which has worker IDs as keys, not the processed ones
         platform_metrics = {}
@@ -742,6 +759,15 @@ class WeightsManager:
 
                 await asyncio.sleep(wait_seconds)
                 logger.info("Wait period complete")
+
+            logger.debug("Refreshing active worker version before scoring")
+            try:
+                # Ensure we have the latest active worker version before building deltas
+                if hasattr(self.validator, "scorer"):
+                    await self.validator.scorer.fetch_active_worker_version()
+            except Exception:
+                # Non-fatal; proceed with whatever is cached
+                pass
 
             logger.debug("Calculating weights")
 
