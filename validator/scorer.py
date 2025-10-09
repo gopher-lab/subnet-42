@@ -266,8 +266,8 @@ class NodeDataScorer:
             worker_version = telemetry_result.get("worker_version")
             if worker_version is not None:
                 aggregated_stats["worker_version"] = worker_version
-        except Exception:
-            # Non-fatal: if missing or malformed, skip storing
+        except (TypeError, AttributeError):
+            # Non-fatal: if telemetry_result is not a dict or missing attrs, skip storing
             pass
 
         return aggregated_stats
