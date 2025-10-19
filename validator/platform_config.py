@@ -124,7 +124,7 @@ class PlatformManager:
             ),
             "web": PlatformConfig(
                 name="web",
-                emission_weight=0.15,
+                emission_weight=0.1,
                 metrics=["queries", "pages", "errors"],
                 error_metrics=["errors"],
                 success_metrics=["pages"],
@@ -137,7 +137,7 @@ class PlatformManager:
             ),
             "reddit": PlatformConfig(
                 name="reddit",
-                emission_weight=0.15,
+                emission_weight=0.1,
                 metrics=["items", "errors", "queries"],
                 error_metrics=["errors"],
                 success_metrics=["items"],
@@ -146,6 +146,19 @@ class PlatformManager:
                     "reddit_returned_items": "items",
                     "reddit_errors": "errors",
                     "reddit_queries": "queries",
+                },
+            ),
+            "linkedin": PlatformConfig(
+                name="linkedin",
+                emission_weight=0.1,
+                metrics=["profiles", "errors", "queries"],
+                error_metrics=["errors"],
+                success_metrics=["profiles"],
+                field_mappings={
+                    # Map raw telemetry field names to clean platform metric names
+                    "linkedin_returned_profiles": "profiles",
+                    "linkedin_errors": "errors",
+                    "linkedin_queries": "queries",
                 },
             ),
         }
