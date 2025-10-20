@@ -4,11 +4,8 @@ import time
 import os
 import logging
 import datetime
-import sys
-from selenium import webdriver
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import WebDriverException
 import random
 

@@ -31,4 +31,4 @@ key.pem
 
 *.conf
 
-kubeconfig.yaml
+kubeconfig*.yaml

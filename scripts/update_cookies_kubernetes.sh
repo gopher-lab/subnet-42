@@ -34,21 +34,24 @@ echo "Kubectl timeout: ${KUBECTL_TIMEOUT}s"
 echo "Max retries: $MAX_RETRIES"
 echo "Max parallel copies: $MAX_PARALLEL_COPIES"
 
+# Resolve kubeconfig path from env (fallback to ./kubeconfig.yaml)
+KUBECONFIG_PATH="${KUBE_CONFIG_FILE:-./kubeconfig.yaml}"
+
 # Debug: Check if kubeconfig exists and kubectl works
 echo ""
 echo "=== DEBUGGING KUBECTL ACCESS ==="
-if [ -f ./kubeconfig.yaml ]; then
-    echo "✓ kubeconfig.yaml exists"
-    echo "File size: $(stat -c%s ./kubeconfig.yaml 2>/dev/null || stat -f%z ./kubeconfig.yaml 2>/dev/null || echo 'unknown') bytes"
+if [ -f "$KUBECONFIG_PATH" ]; then
+    echo "✓ kubeconfig file exists: $KUBECONFIG_PATH"
+    echo "File size: $(stat -c%s "$KUBECONFIG_PATH" 2>/dev/null || stat -f%z "$KUBECONFIG_PATH" 2>/dev/null || echo 'unknown') bytes"
 else
-    echo "✗ kubeconfig.yaml NOT found"
+    echo "✗ kubeconfig file NOT found: $KUBECONFIG_PATH"
 fi
 
 echo "Testing kubectl connection..."
-kubectl --kubeconfig ./kubeconfig.yaml --insecure-skip-tls-verify cluster-info --request-timeout=10s 2>&1 | head -3
+kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify cluster-info --request-timeout=10s 2>&1 | head -3
 
 echo "Listing all pods in namespace $NAMESPACE..."
-kubectl --kubeconfig ./kubeconfig.yaml --insecure-skip-tls-verify get pods -n "$NAMESPACE" --request-timeout=10s 2>&1 | head -10
+kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify get pods -n "$NAMESPACE" --request-timeout=10s 2>&1 | head -10
 
 echo "=== END DEBUG ==="
 echo ""
@@ -69,15 +72,15 @@ copy_file_with_retry() {
         success=false
         
         # Method 1: Try exact "worker" container name
-        if timeout $KUBECTL_TIMEOUT kubectl --kubeconfig ./kubeconfig.yaml --insecure-skip-tls-verify cp "$file" "$namespace/$pod_name:/home/masa/" -c worker --request-timeout=${KUBECTL_TIMEOUT}s 2>/dev/null; then
+        if timeout $KUBECTL_TIMEOUT kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify cp "$file" "$namespace/$pod_name:/home/masa/" -c worker --request-timeout=${KUBECTL_TIMEOUT}s 2>/dev/null; then
             success=true
         else
             # Method 2: Try to find container with "worker" in name
-            worker_containers=$(kubectl --kubeconfig ./kubeconfig.yaml --insecure-skip-tls-verify get pod "$pod_name" -n "$namespace" -o jsonpath='{.spec.containers[?(@.name contains "worker")].name}' 2>/dev/null)
+            worker_containers=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify get pod "$pod_name" -n "$namespace" -o jsonpath='{.spec.containers[?(@.name contains "worker")].name}' 2>/dev/null)
             
             if [ -n "$worker_containers" ]; then
                 for container in $worker_containers; do
-                    if timeout $KUBECTL_TIMEOUT kubectl --kubeconfig ./kubeconfig.yaml --insecure-skip-tls-verify cp "$file" "$namespace/$pod_name:/home/masa/" -c "$container" --request-timeout=${KUBECTL_TIMEOUT}s 2>/dev/null; then
+                    if timeout $KUBECTL_TIMEOUT kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify cp "$file" "$namespace/$pod_name:/home/masa/" -c "$container" --request-timeout=${KUBECTL_TIMEOUT}s 2>/dev/null; then
                         success=true
                         break
                     fi
@@ -123,23 +126,23 @@ for deployment in "${DEPLOYMENT_ARRAY[@]}"; do
     POD_NAME=""
     
     # Method 1: Try to find pod by app label matching deployment name
-    POD_NAME=$(kubectl --kubeconfig ./kubeconfig.yaml --insecure-skip-tls-verify get pods -n "$NAMESPACE" -l app="$deployment" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    POD_NAME=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify get pods -n "$NAMESPACE" -l app="$deployment" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
     
     # Method 2: If not found, try to find pod by name containing the deployment name
     if [ -z "$POD_NAME" ]; then
-        POD_NAME=$(kubectl --kubeconfig ./kubeconfig.yaml --insecure-skip-tls-verify get pods -n "$NAMESPACE" -o jsonpath='{.items[?(@.metadata.name contains "'$deployment'")].metadata.name}' 2>/dev/null | head -1)
+        POD_NAME=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify get pods -n "$NAMESPACE" -o jsonpath='{.items[?(@.metadata.name contains "'$deployment'")].metadata.name}' 2>/dev/null | head -1)
     fi
     
     # Method 3: If still not found, try to find any pod with "worker" in the name that matches part of deployment
     if [ -z "$POD_NAME" ]; then
         # Extract the worker identifier (e.g., "juno" from "tee-worker-juno")
         worker_id=$(echo "$deployment" | sed 's/.*worker-//')
-        POD_NAME=$(kubectl --kubeconfig ./kubeconfig.yaml --insecure-skip-tls-verify get pods -n "$NAMESPACE" -o jsonpath='{.items[?(@.metadata.name contains "worker")].metadata.name}' 2>/dev/null | grep "$worker_id" | head -1)
+        POD_NAME=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify get pods -n "$NAMESPACE" -o jsonpath='{.items[?(@.metadata.name contains "worker")].metadata.name}' 2>/dev/null | grep "$worker_id" | head -1)
     fi
     
     # Method 4: If still not found, try to find any pod containing "worker"
     if [ -z "$POD_NAME" ]; then
-        POD_NAME=$(kubectl --kubeconfig ./kubeconfig.yaml --insecure-skip-tls-verify get pods -n "$NAMESPACE" -o jsonpath='{.items[?(@.metadata.name contains "worker")].metadata.name}' 2>/dev/null | head -1)
+        POD_NAME=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify get pods -n "$NAMESPACE" -o jsonpath='{.items[?(@.metadata.name contains "worker")].metadata.name}' 2>/dev/null | head -1)
     fi
     
     if [ -z "$POD_NAME" ]; then
@@ -151,7 +154,7 @@ for deployment in "${DEPLOYMENT_ARRAY[@]}"; do
     
     # Show available containers for debugging
     echo "Available containers in pod:"
-    kubectl --kubeconfig ./kubeconfig.yaml --insecure-skip-tls-verify get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || echo "Could not list containers"
+    kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || echo "Could not list containers"
     echo "Copying cookie files to /home/masa/..."
     
     # Copy all JSON cookie files to the worker container in parallel
