@@ -1,8 +1,18 @@
 #!/bin/bash
 
-# Load environment variables from .env file
+# Load environment variables from .env file (robustly)
 if [ -f .env ]; then
-    export $(cat .env | grep -v '^#' | xargs)
+    # Load only non-comment, non-empty lines; support KEY=VALUE with spaces
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Trim leading/trailing whitespace
+        trimmed=$(echo "$line" | sed -e 's/^\s\+//' -e 's/\s\+$//')
+        # Skip empty or comment lines
+        if [ -z "$trimmed" ] || echo "$trimmed" | grep -qE '^#'; then
+            continue
+        fi
+        # Export KEY=VALUE
+        eval export "$trimmed"
+    done < .env
 else
     echo "Error: .env file not found"
     exit 1
@@ -27,6 +37,14 @@ KUBECTL_TIMEOUT=${KUBECTL_TIMEOUT:-300}  # 5 minutes default
 MAX_RETRIES=${MAX_RETRIES:-3}
 RETRY_DELAY=${RETRY_DELAY:-5}
 MAX_PARALLEL_COPIES=${MAX_PARALLEL_COPIES:-10}  # Maximum parallel copy operations
+
+# Container selection configuration
+# If CONTAINER_NAME is provided, it will be used exactly.
+# Otherwise, the first container whose name contains CONTAINER_SUBSTRING (default: "worker") will be used.
+# If no match is found and FALLBACK_TO_FIRST_CONTAINER is true (default: true), the first container will be used.
+CONTAINER_NAME=${CONTAINER_NAME:-}
+CONTAINER_SUBSTRING=${CONTAINER_SUBSTRING:-worker}
+FALLBACK_TO_FIRST_CONTAINER=${FALLBACK_TO_FIRST_CONTAINER:-true}
 
 echo "Deployments to process: $DEPLOYMENTS"
 echo "Namespace: $NAMESPACE"
@@ -56,35 +74,82 @@ kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify get pods -n "
 echo "=== END DEBUG ==="
 echo ""
 
+# Select target container for a given pod
+get_target_container() {
+    local pod_name="$1"
+    local namespace="$2"
+
+    # List all container names in the pod
+    local containers
+    containers=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify get pod "$pod_name" -n "$namespace" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null)
+
+    if [ -z "$containers" ]; then
+        echo ""
+        return 0
+    fi
+
+    # If an explicit container name is provided and exists, use it
+    if [ -n "$CONTAINER_NAME" ]; then
+        if echo "$containers" | tr ' ' '\n' | grep -qx "$CONTAINER_NAME"; then
+            echo "$CONTAINER_NAME"
+            return 0
+        fi
+    fi
+
+    # Try to find a container matching the substring (case-insensitive)
+    if [ -n "$CONTAINER_SUBSTRING" ]; then
+        local match
+        match=$(echo "$containers" | tr ' ' '\n' | grep -i "$CONTAINER_SUBSTRING" | head -1)
+        if [ -n "$match" ]; then
+            echo "$match"
+            return 0
+        fi
+    fi
+
+    # Fallback to the first container if allowed
+    if [ "$FALLBACK_TO_FIRST_CONTAINER" = "true" ]; then
+        echo "$containers" | awk '{print $1}'
+        return 0
+    fi
+
+    echo ""
+}
+
 # Function to copy file with retry logic
 copy_file_with_retry() {
     local file="$1"
     local pod_name="$2"
     local namespace="$3"
     local max_retries="$4"
+    local container_name="$5"
     local filename=$(basename "$file")
     
     for ((i=1; i<=max_retries; i++)); do
         echo "Copying $filename (attempt $i/$max_retries)..."
         
         # Use timeout command to limit kubectl execution time
-        # Try copying to "worker" container first, then try containers with "worker" in name
+        # Prefer provided/detected container; otherwise try common worker patterns
         success=false
         
-        # Method 1: Try exact "worker" container name
-        if timeout $KUBECTL_TIMEOUT kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify cp "$file" "$namespace/$pod_name:/home/masa/" -c worker --request-timeout=${KUBECTL_TIMEOUT}s 2>/dev/null; then
+        # Method 0: If a container_name was provided, try that first
+        if [ -n "$container_name" ] && timeout $KUBECTL_TIMEOUT kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify cp "$file" "$namespace/$pod_name:/home/masa/" -c "$container_name" --request-timeout=${KUBECTL_TIMEOUT}s 2>/dev/null; then
             success=true
         else
-            # Method 2: Try to find container with "worker" in name
-            worker_containers=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify get pod "$pod_name" -n "$namespace" -o jsonpath='{.spec.containers[?(@.name contains "worker")].name}' 2>/dev/null)
-            
-            if [ -n "$worker_containers" ]; then
-                for container in $worker_containers; do
-                    if timeout $KUBECTL_TIMEOUT kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify cp "$file" "$namespace/$pod_name:/home/masa/" -c "$container" --request-timeout=${KUBECTL_TIMEOUT}s 2>/dev/null; then
-                        success=true
-                        break
-                    fi
-                done
+            # Method 1: Try exact "worker" container name
+            if timeout $KUBECTL_TIMEOUT kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify cp "$file" "$namespace/$pod_name:/home/masa/" -c worker --request-timeout=${KUBECTL_TIMEOUT}s 2>/dev/null; then
+                success=true
+            else
+                # Method 2: Try to find a container whose name contains "worker"
+                local containers
+                containers=$(kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify get pod "$pod_name" -n "$namespace" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null)
+                if [ -n "$containers" ]; then
+                    for container in $(echo "$containers" | tr ' ' '\n' | grep -i worker); do
+                        if timeout $KUBECTL_TIMEOUT kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify cp "$file" "$namespace/$pod_name:/home/masa/" -c "$container" --request-timeout=${KUBECTL_TIMEOUT}s 2>/dev/null; then
+                            success=true
+                            break
+                        fi
+                    done
+                fi
             fi
         fi
         
@@ -155,6 +220,14 @@ for deployment in "${DEPLOYMENT_ARRAY[@]}"; do
     # Show available containers for debugging
     echo "Available containers in pod:"
     kubectl --kubeconfig "$KUBECONFIG_PATH" --insecure-skip-tls-verify get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || echo "Could not list containers"
+    
+    # Detect target container
+    TARGET_CONTAINER=$(get_target_container "$POD_NAME" "$NAMESPACE")
+    if [ -n "$TARGET_CONTAINER" ]; then
+        echo "Using container: $TARGET_CONTAINER"
+    else
+        echo "Warning: Could not auto-detect target container; will try common worker patterns"
+    fi
     echo "Copying cookie files to /home/masa/..."
     
     # Copy all JSON cookie files to the worker container in parallel
@@ -180,7 +253,7 @@ for deployment in "${DEPLOYMENT_ARRAY[@]}"; do
             for ((j=i; j<i+MAX_PARALLEL_COPIES && j<${#file_list[@]}; j++)); do
                 file="${file_list[$j]}"
                 (
-                    if ! copy_file_with_retry "$file" "$POD_NAME" "$NAMESPACE" "$MAX_RETRIES"; then
+                    if ! copy_file_with_retry "$file" "$POD_NAME" "$NAMESPACE" "$MAX_RETRIES" "$TARGET_CONTAINER"; then
                         echo "FAILED:$(basename "$file")" > "/tmp/failed_$(basename "$file")_$$"
                     fi
                 ) &
