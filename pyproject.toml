@@ -19,7 +19,9 @@ dependencies = [
     "cryptography",
     "bittensor",
     "bittensor-commit-reveal",
-    "fiber @ git+https://github.com/5u6r054/fiber.git@fix/remove-bittensor-commit-reveal-dependency"
+    "fiber @ git+https://github.com/5u6r054/fiber.git@fix/remove-bittensor-commit-reveal-dependency",
+    "selenium",
+    "undetected-chromedriver"
 ]
 
 [project.optional-dependencies]

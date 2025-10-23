@@ -200,6 +200,7 @@ services:
       - ./.env:/app/.env
       - ./cookies:/app/cookies
       - ./kubeconfig.yaml:/app/kubeconfig.yaml:ro
+      - ./kubeconfig.gopher.yaml:/app/kubeconfig.gopher.yaml:ro
     environment:
       - DEPLOYMENTS=${DEPLOYMENTS}
       - NAMESPACE=${NAMESPACE}

@@ -4,12 +4,11 @@ import time
 import os
 import logging
 import datetime
-from selenium import webdriver
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import WebDriverException
 import random
-from selenium_stealth import stealth
+
 from selenium.webdriver.common.keys import Keys
 from dotenv import load_dotenv
 
@@ -21,14 +20,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Set output directory based on environment
+# Set output directory based on environment (robust to current working directory)
 running_in_docker = os.environ.get("RUNNING_IN_DOCKER", "false").lower() == "true"
 if running_in_docker:
     OUTPUT_DIR = "/app/cookies"
-    logger.info("Docker environment detected, saving cookies to /app/cookies")
+    logger.info(f"Docker environment detected, saving cookies to {OUTPUT_DIR}")
 else:
-    OUTPUT_DIR = "../cookies"
-    logger.info("Local environment detected, saving cookies to ../cookies")
+    # Resolve project root as the parent of the directory containing this script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    OUTPUT_DIR = os.path.join(project_root, "cookies")
+    logger.info(f"Local environment detected, saving cookies to {OUTPUT_DIR}")
 
 # Ensure output directory exists
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -204,216 +206,144 @@ def setup_realistic_profile(temp_profile):
     return temp_profile
 
 
-def setup_driver():
-    """Set up and return a Chrome driver using a dedicated profile."""
-    logger.info("Setting up Chrome driver...")
+def setup_driver(username):
+    """Set up and return an undetected Chrome driver with a persistent profile per account."""
+    logger.info("Setting up undetected Chrome driver...")
 
-    options = webdriver.ChromeOptions()
+    # Build a persistent per-account profile directory
+    profile_dir = os.path.join(OUTPUT_DIR, "profiles", username)
+    os.makedirs(profile_dir, exist_ok=True)
+    logger.info(f"Using persistent Chrome profile at: {profile_dir}")
 
-    # Create a temporary profile directory to avoid conflicts with existing Chrome
-    import tempfile
+    options = uc.ChromeOptions()
 
-    temp_profile = os.path.join(
-        tempfile.gettempdir(), f"chrome_profile_{int(time.time())}"
-    )
-    os.makedirs(temp_profile, exist_ok=True)
-    logger.info(f"Using dedicated Chrome profile at: {temp_profile}")
-    options.add_argument(f"--user-data-dir={temp_profile}")
-
-    # Common options
+    # Essentials only; avoid suspicious flags
+    options.add_argument(f"--user-data-dir={profile_dir}")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-blink-features=AutomationControlled")
 
-    # Add anti-cloudflare options
-    options.add_argument("--disable-features=IsolateOrigins,site-per-process")
-    options.add_argument("--disable-web-security")
-    options.add_argument("--allow-running-insecure-content")
+    # Optional: allow specifying a custom Chrome binary
+    chrome_binary = os.environ.get("CHROME_BINARY")
+    if chrome_binary and os.path.exists(chrome_binary):
+        options.binary_location = chrome_binary
 
-    # Add a random viewport size
+    # Randomize viewport size a bit
     width = random.randint(1050, 1200)
     height = random.randint(800, 950)
     options.add_argument(f"--window-size={width},{height}")
 
-    # Add more randomized user agents
-    user_agents = [
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.2 Safari/605.1.15",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-    ]
-    user_agent = random.choice(user_agents)
-    options.add_argument(f"--user-agent={user_agent}")
-
-    # CDP detection evasion
-    options.add_argument("--remote-debugging-port=0")
-    options.add_argument("--remote-allow-origins=*")
-
-    # Set up more realistic browser profile
-    temp_profile = setup_realistic_profile(temp_profile)
-
-    # Add headers to appear more like a genuine browser
+    # Language header
     options.add_argument("--accept-lang=en-US,en;q=0.9")
-    options.add_argument("--disable-features=IsolateOrigins,site-per-process")
 
-    # Check for proxy environment variables and configure proxy if available
-    # This is especially important when running behind a VPN
+    # Proxy support (VPN/backends)
     proxy_http = os.environ.get("http_proxy")
     proxy_https = os.environ.get("https_proxy")
-
     if proxy_http or proxy_https:
         proxy_to_use = proxy_http or proxy_https
         logger.info(f"Detected proxy settings: {proxy_to_use}")
-
-        # Format the proxy properly for Chrome
         if proxy_to_use.startswith("http://"):
-            proxy_to_use = proxy_to_use[7:]  # Remove http:// prefix
-
+            proxy_to_use = proxy_to_use[7:]
         options.add_argument(f"--proxy-server={proxy_to_use}")
-        logger.info(f"Configured Chrome to use proxy: {proxy_to_use}")
-
-        # Add additional settings to help with proxy connectivity
         options.add_argument("--ignore-certificate-errors")
-        options.add_argument("--disable-extensions")
 
+    # Prefer a modern, real Chrome UA; CDP override will ensure full hints
+    # We'll derive version from driver after launch for consistency
     try:
-        logger.info("Initializing Chrome driver...")
-        driver = webdriver.Chrome(options=options)
-        logger.info("Successfully initialized Chrome driver")
+        logger.info("Initializing undetected Chrome driver...")
+        driver = uc.Chrome(options=options)
+        logger.info("Successfully initialized undetected Chrome driver")
 
-        # Additional anti-detection measures
-        driver.execute_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        # Derive browser version to craft consistent Client Hints
+        browser_version = None
+        try:
+            caps = getattr(driver, "capabilities", {}) or {}
+            browser_version = caps.get("browserVersion") or caps.get("version")
+        except Exception:
+            pass
+        if not browser_version:
+            browser_version = "126.0.6478.61"
+        major_version = browser_version.split(".")[0]
+
+        # Compose realistic UA (macOS Sonoma-ish)
+        ua_string = (
+            f"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
+            f"AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/{browser_version} Safari/537.36"
         )
 
-        # Apply more comprehensive stealth settings
-        stealth(
-            driver,
-            languages=["en-US", "en"],
-            vendor="Google Inc.",
-            platform="Win32",
-            webgl_vendor="Intel Inc.",
-            renderer="Intel Iris OpenGL Engine",
-            fix_hairline=True,
-            # New parameters
-            hardware_concurrency=4,  # Spoof CPU core count
-            media_codecs=True,  # Mask media codec capabilities
-            audio_context=True,  # Prevent audio fingerprinting
-            fonts_languages=["en-US"],  # Standardize font rendering
-        )
+        # Client Hints with brands and fullVersionList
+        brands = [
+            {"brand": "Not.A/Brand", "version": "24"},
+            {"brand": "Chromium", "version": major_version},
+            {"brand": "Google Chrome", "version": major_version},
+        ]
+        full_version_list = [
+            {"brand": "Not.A/Brand", "version": "24.0.0.0"},
+            {"brand": "Chromium", "version": browser_version},
+            {"brand": "Google Chrome", "version": browser_version},
+        ]
 
-        # Timezone and geolocation spoofing
-        driver.execute_script(
-            """
-          const fakeTime = new Date('2023-01-01T12:00:00');
-          const dateNowStub = () => fakeTime.getTime();
-          const realDateNow = Date.now;
-          Date.now = dateNowStub;
-          const timeStub = () => 12 * 60 * 60 * 1000;
-          const realPerformanceNow = performance.now;
-          performance.now = timeStub;
-        """
-        )
+        try:
+            driver.execute_cdp_cmd(
+                "Network.setUserAgentOverride",
+                {
+                    "userAgent": ua_string,
+                    "platform": "macOS",
+                    "userAgentMetadata": {
+                        "brands": brands,
+                        "fullVersionList": full_version_list,
+                        "platform": "macOS",
+                        "platformVersion": "14.5.0",
+                        "architecture": "x86",
+                        "model": "",
+                        "mobile": False,
+                        "bitness": "64",
+                    },
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to set UA override via CDP: {str(e)}")
 
-        # Spoof geolocation API
-        driver.execute_script(
-            """
-          navigator.geolocation.getCurrentPosition = function(success) {
-            success({
-              coords: {
-                latitude: 37.7749,
-                longitude: -122.4194,
-                accuracy: 100,
-                altitude: null,
-                altitudeAccuracy: null,
-                heading: null,
-                speed: null
-              },
-              timestamp: Date.now()
-            });
-          };
-        """
-        )
+        # Timezone override (optional)
+        timezone_id = os.environ.get("TIMEZONE_ID", "UTC")
+        try:
+            driver.execute_cdp_cmd(
+                "Emulation.setTimezoneOverride", {"timezoneId": timezone_id}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to set timezone override: {str(e)}")
 
-        # More comprehensive anti-detection script
-        driver.execute_script(
-            """
-        // Overwrite navigator properties that reveal automation
-        const overrideNavigator = () => {
-          Object.defineProperty(navigator, 'maxTouchPoints', {
-            get: () => 5
-          });
-          
-          Object.defineProperty(navigator, 'hardwareConcurrency', {
-            get: () => 8
-          });
-          
-          Object.defineProperty(navigator, 'deviceMemory', {
-            get: () => 8
-          });
-          
-          // Override connection type
-          if (navigator.connection) {
-            Object.defineProperty(navigator.connection, 'type', {
-              get: () => 'wifi'
-            });
-          }
-          
-          // Override webRTC
-          if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-            navigator.mediaDevices.enumerateDevices = () => Promise.resolve([
-              {deviceId: 'default', kind: 'audioinput', label: '', groupId: 'default'},
-              {deviceId: 'default', kind: 'audiooutput', label: '', groupId: 'default'},
-              {deviceId: 'default', kind: 'videoinput', label: '', groupId: 'default'}
-            ]);
-          }
-        };
-
-        // Canvas fingerprint protection
-        const overrideCanvas = () => {
-          const oldGetContext = HTMLCanvasElement.prototype.getContext;
-          HTMLCanvasElement.prototype.getContext = function(type, attributes) {
-            const context = oldGetContext.apply(this, arguments);
-            if (type === '2d') {
-              const oldFillText = context.fillText;
-              context.fillText = function() {
-                arguments[0] = arguments[0].toString();
-                return oldFillText.apply(this, arguments);
-              };
-              const oldMeasureText = context.measureText;
-              context.measureText = function() {
-                arguments[0] = arguments[0].toString();
-                const result = oldMeasureText.apply(this, arguments);
-                result.width += Math.random() * 0.0001;
-                return result;
-              };
-            }
-            return context;
-          };
-        };
-
-        overrideNavigator();
-        overrideCanvas();
-        """
-        )
+        # Geolocation permissions and override (optional)
+        try:
+            lat = float(os.environ.get("GEO_LAT", "37.7749"))
+            lon = float(os.environ.get("GEO_LON", "-122.4194"))
+            acc = float(os.environ.get("GEO_ACC", "100"))
+            # Grant permission for Twitter origin
+            try:
+                driver.execute_cdp_cmd(
+                    "Browser.grantPermissions",
+                    {"permissions": ["geolocation"], "origin": "https://twitter.com"},
+                )
+            except Exception:
+                pass
+            driver.execute_cdp_cmd(
+                "Emulation.setGeolocationOverride",
+                {"latitude": lat, "longitude": lon, "accuracy": acc},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to set geolocation override: {str(e)}")
 
         return driver
     except Exception as e:
-        logger.error(f"Error creating Chrome driver: {str(e)}")
-        # Ultimate fallback with minimal options
+        logger.error(f"Error creating undetected Chrome driver: {str(e)}")
+        # Fallback with minimal options
         try:
-            logger.info("Trying with minimal Chrome options...")
-            minimal_options = webdriver.ChromeOptions()
+            logger.info("Trying fallback undetected Chrome with minimal options...")
+            minimal_options = uc.ChromeOptions()
             minimal_options.add_argument("--no-sandbox")
-
-            # Add proxy settings to minimal options if available
-            if proxy_http or proxy_https:
-                proxy_to_use = proxy_http or proxy_https
-                if proxy_to_use.startswith("http://"):
-                    proxy_to_use = proxy_to_use[7:]  # Remove http:// prefix
-                minimal_options.add_argument(f"--proxy-server={proxy_to_use}")
-                minimal_options.add_argument("--ignore-certificate-errors")
-
-            driver = webdriver.Chrome(options=minimal_options)
+            minimal_options.add_argument("--disable-dev-shm-usage")
+            minimal_options.add_argument(f"--user-data-dir={profile_dir}")
+            driver = uc.Chrome(options=minimal_options)
             return driver
         except Exception as e2:
             logger.error(f"Final driver creation attempt failed: {str(e2)}")
@@ -1123,7 +1053,7 @@ def main():
                     except:
                         pass
 
-                driver = setup_driver()
+                driver = setup_driver(username)
                 logger.info(
                     f"Browser initialized for account: {username} (attempt {retry_count+1}/{max_retries})"
                 )
