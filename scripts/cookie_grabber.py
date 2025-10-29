@@ -8,6 +8,9 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import WebDriverException
 import random
+import subprocess
+import re
+import shutil
 
 from selenium.webdriver.common.keys import Keys
 from dotenv import load_dotenv
@@ -206,6 +209,83 @@ def setup_realistic_profile(temp_profile):
     return temp_profile
 
 
+def resolve_chrome_binary() -> str | None:
+    """Resolve a usable Chrome binary path.
+
+    Priority:
+    1) CHROME_BINARY env var
+    2) Known platform defaults
+    3) First match on PATH
+    """
+    env_path = os.environ.get("CHROME_BINARY")
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    # macOS default
+    mac_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if os.path.exists(mac_path):
+        return mac_path
+
+    # Linux common paths
+    for candidate in [
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        shutil.which("chrome"),
+    ]:
+        if candidate and os.path.exists(candidate):
+            return candidate
+
+    # Windows typical locations (best-effort, user can set CHROME_BINARY)
+    win_paths = [
+        os.path.expandvars(r"%ProgramFiles%/Google/Chrome/Application/chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%/Google/Chrome/Application/chrome.exe"),
+        os.path.expandvars(r"%LocalAppData%/Google/Chrome/Application/chrome.exe"),
+    ]
+    for p in win_paths:
+        if os.path.exists(p):
+            return p
+
+    return None
+
+
+def get_chrome_major_version(chrome_binary: str | None) -> int | None:
+    """Return local Chrome major version (e.g., 141) by invoking --version.
+
+    If chrome_binary is None, attempts common commands on PATH.
+    """
+    candidates = []
+    if chrome_binary:
+        candidates.append([chrome_binary, "--version"])
+    # Common CLI names
+    for name in [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+    ]:
+        exe = shutil.which(name)
+        if exe:
+            candidates.append([exe, "--version"])
+
+    version_regex = re.compile(r"(Chrome|Chromium)\s+([0-9]+)\.")
+
+    for cmd in candidates:
+        try:
+            out = subprocess.check_output(
+                cmd, stderr=subprocess.STDOUT, text=True
+            ).strip()
+            m = version_regex.search(out)
+            if m:
+                return int(m.group(2))
+        except Exception:
+            continue
+
+    return None
+
+
 def setup_driver(username):
     """Set up and return an undetected Chrome driver with a persistent profile per account."""
     logger.info("Setting up undetected Chrome driver...")
@@ -222,10 +302,26 @@ def setup_driver(username):
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
 
-    # Optional: allow specifying a custom Chrome binary
-    chrome_binary = os.environ.get("CHROME_BINARY")
-    if chrome_binary and os.path.exists(chrome_binary):
+    # Resolve Chrome binary path
+    chrome_binary = resolve_chrome_binary()
+    if chrome_binary:
         options.binary_location = chrome_binary
+        logger.info(f"Using Chrome binary: {chrome_binary}")
+    else:
+        logger.warning("Could not resolve Chrome binary. Relying on system default.")
+
+    # Determine local Chrome major version
+    env_force_version = os.environ.get("UC_FORCE_VERSION_MAIN")
+    detected_major = None
+    if env_force_version and env_force_version.isdigit():
+        detected_major = int(env_force_version)
+        logger.info(
+            f"UC_FORCE_VERSION_MAIN set; forcing driver for Chrome {detected_major}"
+        )
+    else:
+        detected_major = get_chrome_major_version(chrome_binary)
+        if detected_major:
+            logger.info(f"Detected local Chrome major version: {detected_major}")
 
     # Randomize viewport size a bit
     width = random.randint(1050, 1200)
@@ -250,7 +346,20 @@ def setup_driver(username):
     # We'll derive version from driver after launch for consistency
     try:
         logger.info("Initializing undetected Chrome driver...")
-        driver = uc.Chrome(options=options)
+        try:
+            if detected_major:
+                driver = uc.Chrome(options=options, version_main=detected_major)
+            else:
+                driver = uc.Chrome(options=options)
+        except TypeError as te:
+            if "version_main" in str(te):
+                logger.warning(
+                    "Your undetected_chromedriver is outdated and lacks version_main. "
+                    "Please upgrade: pip install -U undetected-chromedriver"
+                )
+                driver = uc.Chrome(options=options)
+            else:
+                raise
         logger.info("Successfully initialized undetected Chrome driver")
 
         # Derive browser version to craft consistent Client Hints
@@ -336,15 +445,48 @@ def setup_driver(username):
         return driver
     except Exception as e:
         logger.error(f"Error creating undetected Chrome driver: {str(e)}")
-        # Fallback with minimal options
+
+        # If the error indicates a version mismatch, parse and retry once with that version
+        try:
+            msg = str(e)
+            m_current = re.search(r"Current browser version is\s+(\d+)", msg)
+            forced_major = int(m_current.group(1)) if m_current else None
+            if not forced_major:
+                m_supports = re.search(r"only supports Chrome version\s+(\d+)", msg)
+                forced_major = int(m_supports.group(1)) if m_supports else None
+
+            if forced_major:
+                logger.info(f"Retrying with UC driver for Chrome {forced_major}")
+                minimal_options = uc.ChromeOptions()
+                minimal_options.add_argument("--no-sandbox")
+                minimal_options.add_argument("--disable-dev-shm-usage")
+                minimal_options.add_argument(f"--user-data-dir={profile_dir}")
+                if chrome_binary:
+                    minimal_options.binary_location = chrome_binary
+                try:
+                    return uc.Chrome(options=minimal_options, version_main=forced_major)
+                except TypeError as te:
+                    if "version_main" in str(te):
+                        logger.warning(
+                            "Your undetected_chromedriver is outdated and lacks version_main. "
+                            "Please upgrade: pip install -U undetected-chromedriver"
+                        )
+                        return uc.Chrome(options=minimal_options)
+                    raise
+
+        except Exception as retry_err:
+            logger.warning(f"Retry after parsing version failed: {str(retry_err)}")
+
+        # Last-resort minimal fallback
         try:
             logger.info("Trying fallback undetected Chrome with minimal options...")
             minimal_options = uc.ChromeOptions()
             minimal_options.add_argument("--no-sandbox")
             minimal_options.add_argument("--disable-dev-shm-usage")
             minimal_options.add_argument(f"--user-data-dir={profile_dir}")
-            driver = uc.Chrome(options=minimal_options)
-            return driver
+            if chrome_binary:
+                minimal_options.binary_location = chrome_binary
+            return uc.Chrome(options=minimal_options)
         except Exception as e2:
             logger.error(f"Final driver creation attempt failed: {str(e2)}")
             raise
