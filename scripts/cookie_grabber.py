@@ -45,7 +45,7 @@ COOKIE_NAMES = ["personalization_id", "kdt", "twid", "ct0", "auth_token", "att"]
 TWITTER_DOMAINS = ["twitter.com"]
 
 # Twitter login URL
-TWITTER_LOGIN_URL = "https://twitter.com/i/flow/login"
+TWITTER_LOGIN_URL = "https://x.com/i/flow/login"
 
 # Constants
 POLLING_INTERVAL = 1  # Check every 1 second
@@ -293,6 +293,14 @@ def setup_driver(username):
     # Build a persistent per-account profile directory
     profile_dir = os.path.join(OUTPUT_DIR, "profiles", username)
     os.makedirs(profile_dir, exist_ok=True)
+
+    # Enhance profile with realistic history/bookmarks if it's a new profile
+    if not os.path.exists(os.path.join(profile_dir, "Default")):
+        try:
+            setup_realistic_profile(profile_dir)
+        except Exception as e:
+            logger.warning(f"Failed to setup realistic profile bits: {e}")
+
     logger.info(f"Using persistent Chrome profile at: {profile_dir}")
 
     options = uc.ChromeOptions()
@@ -849,7 +857,7 @@ def process_account_state_machine(driver, username, password):
 
         # Wait for page to load using document readyState
         wait_start = time.time()
-        max_wait = 10  # Maximum seconds to wait
+        max_wait = 30  # Maximum seconds to wait
 
         while time.time() - wait_start < max_wait:
             # Check if document is ready
@@ -1166,6 +1174,7 @@ def main():
         # Maximum number of retries for account processing
         max_retries = 5  # Increased retries to allow for VPN switches
         retry_count = 0
+        consecutive_window_closes = 0
         driver = None
 
         account_pair = account_pairs[current_account_index]
@@ -1218,27 +1227,56 @@ def main():
                     "no such window" in str(e).lower()
                     or "no such session" in str(e).lower()
                 ):
-                    logger.info(
-                        "Browser window was closed. This might be for VPN switching."
-                    )
-                    logger.info(
-                        "Waiting 30 seconds for VPN to stabilize before retrying..."
-                    )
+                    consecutive_window_closes += 1
+                    
+                    if consecutive_window_closes > 3:
+                        logger.error(f"Window closed unexpectedly {consecutive_window_closes} times in a row. Treating as failure.")
+                        
+                        # Handle potential profile corruption by moving the profile directory
+                        try:
+                            profile_dir = os.path.join(OUTPUT_DIR, "profiles", username)
+                            if os.path.exists(profile_dir):
+                                timestamp = int(time.time())
+                                backup_path = f"{profile_dir}_corrupted_{timestamp}"
+                                logger.warning(f"Profile likely corrupted. Moving {profile_dir} to {backup_path}")
+                                # Close any lingering file handles before moving (best effort)
+                                if driver:
+                                    try:
+                                        driver.quit()
+                                    except:
+                                        pass
+                                    driver = None
+                                os.rename(profile_dir, backup_path)
+                                logger.info("Profile directory reset. Next attempt will start fresh.")
+                        except Exception as e:
+                            logger.error(f"Failed to move corrupted profile: {str(e)}")
 
-                    # Clean up the driver
-                    try:
-                        if driver:
-                            driver.quit()
-                    except:
-                        pass
+                        retry_count += 1
+                        # We don't continue here, so it will fall through to cleanup and loop check
+                    else:
+                        logger.info(
+                            f"Browser window was closed (occurrence {consecutive_window_closes}). This might be for VPN switching."
+                        )
+                        logger.info(
+                            "Waiting 30 seconds for VPN to stabilize before retrying..."
+                        )
 
-                    # Wait for VPN switch to complete
-                    time.sleep(30)
+                        # Clean up the driver
+                        try:
+                            if driver:
+                                driver.quit()
+                        except:
+                            pass
 
-                    # Don't increment retry count for intentional window closing
-                    # This allows unlimited VPN switches
-                    logger.info(f"Resuming after window close for account: {username}")
+                        # Wait for VPN switch to complete
+                        time.sleep(30)
+
+                        # Don't increment retry count for intentional window closing
+                        # This allows unlimited VPN switches
+                        logger.info(f"Resuming after window close for account: {username}")
+                        continue
                 else:
+                    consecutive_window_closes = 0  # Reset on different error
                     # Handle other WebDriver exceptions
                     retry_count += 1
                     logger.error(
@@ -1247,6 +1285,7 @@ def main():
                     time.sleep(15)
 
             except Exception as e:
+                consecutive_window_closes = 0  # Reset on different error
                 retry_count += 1
                 logger.error(
                     f"Unexpected error (attempt {retry_count}/{max_retries}): {str(e)}"
