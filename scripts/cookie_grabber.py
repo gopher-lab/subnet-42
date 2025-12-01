@@ -8,6 +8,9 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import WebDriverException
 import random
+import subprocess
+import re
+import shutil
 
 from selenium.webdriver.common.keys import Keys
 from dotenv import load_dotenv
@@ -38,11 +41,11 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Twitter cookie names to extract
 COOKIE_NAMES = ["personalization_id", "kdt", "twid", "ct0", "auth_token", "att"]
 
-# Twitter domains to handle - We will only use twitter.com
-TWITTER_DOMAINS = ["twitter.com"]
+# Twitter domains to handle - We will only use x.com
+TWITTER_DOMAINS = ["x.com"]
 
 # Twitter login URL
-TWITTER_LOGIN_URL = "https://twitter.com/i/flow/login"
+TWITTER_LOGIN_URL = "https://x.com/i/flow/login"
 
 # Constants
 POLLING_INTERVAL = 1  # Check every 1 second
@@ -78,7 +81,7 @@ def get_future_date(days=7, hours=0, minutes=0, seconds=0):
     return future_date.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def create_cookie_template(name, value, domain="twitter.com", expires=None):
+def create_cookie_template(name, value, domain="x.com", expires=None):
     """
     Create a standard cookie template with the given name and value.
     Note: Cookie values should not contain double quotes as they cause errors in Go's HTTP client.
@@ -206,6 +209,83 @@ def setup_realistic_profile(temp_profile):
     return temp_profile
 
 
+def resolve_chrome_binary() -> str | None:
+    """Resolve a usable Chrome binary path.
+
+    Priority:
+    1) CHROME_BINARY env var
+    2) Known platform defaults
+    3) First match on PATH
+    """
+    env_path = os.environ.get("CHROME_BINARY")
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    # macOS default
+    mac_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if os.path.exists(mac_path):
+        return mac_path
+
+    # Linux common paths
+    for candidate in [
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        shutil.which("chrome"),
+    ]:
+        if candidate and os.path.exists(candidate):
+            return candidate
+
+    # Windows typical locations (best-effort, user can set CHROME_BINARY)
+    win_paths = [
+        os.path.expandvars(r"%ProgramFiles%/Google/Chrome/Application/chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%/Google/Chrome/Application/chrome.exe"),
+        os.path.expandvars(r"%LocalAppData%/Google/Chrome/Application/chrome.exe"),
+    ]
+    for p in win_paths:
+        if os.path.exists(p):
+            return p
+
+    return None
+
+
+def get_chrome_major_version(chrome_binary: str | None) -> int | None:
+    """Return local Chrome major version (e.g., 141) by invoking --version.
+
+    If chrome_binary is None, attempts common commands on PATH.
+    """
+    candidates = []
+    if chrome_binary:
+        candidates.append([chrome_binary, "--version"])
+    # Common CLI names
+    for name in [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+    ]:
+        exe = shutil.which(name)
+        if exe:
+            candidates.append([exe, "--version"])
+
+    version_regex = re.compile(r"(Chrome|Chromium)\s+([0-9]+)\.")
+
+    for cmd in candidates:
+        try:
+            out = subprocess.check_output(
+                cmd, stderr=subprocess.STDOUT, text=True
+            ).strip()
+            m = version_regex.search(out)
+            if m:
+                return int(m.group(2))
+        except Exception:
+            continue
+
+    return None
+
+
 def setup_driver(username):
     """Set up and return an undetected Chrome driver with a persistent profile per account."""
     logger.info("Setting up undetected Chrome driver...")
@@ -213,6 +293,14 @@ def setup_driver(username):
     # Build a persistent per-account profile directory
     profile_dir = os.path.join(OUTPUT_DIR, "profiles", username)
     os.makedirs(profile_dir, exist_ok=True)
+
+    # Enhance profile with realistic history/bookmarks if it's a new profile
+    if not os.path.exists(os.path.join(profile_dir, "Default")):
+        try:
+            setup_realistic_profile(profile_dir)
+        except Exception as e:
+            logger.warning(f"Failed to setup realistic profile bits: {e}")
+
     logger.info(f"Using persistent Chrome profile at: {profile_dir}")
 
     options = uc.ChromeOptions()
@@ -222,10 +310,26 @@ def setup_driver(username):
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
 
-    # Optional: allow specifying a custom Chrome binary
-    chrome_binary = os.environ.get("CHROME_BINARY")
-    if chrome_binary and os.path.exists(chrome_binary):
+    # Resolve Chrome binary path
+    chrome_binary = resolve_chrome_binary()
+    if chrome_binary:
         options.binary_location = chrome_binary
+        logger.info(f"Using Chrome binary: {chrome_binary}")
+    else:
+        logger.warning("Could not resolve Chrome binary. Relying on system default.")
+
+    # Determine local Chrome major version
+    env_force_version = os.environ.get("UC_FORCE_VERSION_MAIN")
+    detected_major = None
+    if env_force_version and env_force_version.isdigit():
+        detected_major = int(env_force_version)
+        logger.info(
+            f"UC_FORCE_VERSION_MAIN set; forcing driver for Chrome {detected_major}"
+        )
+    else:
+        detected_major = get_chrome_major_version(chrome_binary)
+        if detected_major:
+            logger.info(f"Detected local Chrome major version: {detected_major}")
 
     # Randomize viewport size a bit
     width = random.randint(1050, 1200)
@@ -250,7 +354,20 @@ def setup_driver(username):
     # We'll derive version from driver after launch for consistency
     try:
         logger.info("Initializing undetected Chrome driver...")
-        driver = uc.Chrome(options=options)
+        try:
+            if detected_major:
+                driver = uc.Chrome(options=options, version_main=detected_major)
+            else:
+                driver = uc.Chrome(options=options)
+        except TypeError as te:
+            if "version_main" in str(te):
+                logger.warning(
+                    "Your undetected_chromedriver is outdated and lacks version_main. "
+                    "Please upgrade: pip install -U undetected-chromedriver"
+                )
+                driver = uc.Chrome(options=options)
+            else:
+                raise
         logger.info("Successfully initialized undetected Chrome driver")
 
         # Derive browser version to craft consistent Client Hints
@@ -322,7 +439,7 @@ def setup_driver(username):
             try:
                 driver.execute_cdp_cmd(
                     "Browser.grantPermissions",
-                    {"permissions": ["geolocation"], "origin": "https://twitter.com"},
+                    {"permissions": ["geolocation"], "origin": "https://x.com"},
                 )
             except Exception:
                 pass
@@ -336,15 +453,48 @@ def setup_driver(username):
         return driver
     except Exception as e:
         logger.error(f"Error creating undetected Chrome driver: {str(e)}")
-        # Fallback with minimal options
+
+        # If the error indicates a version mismatch, parse and retry once with that version
+        try:
+            msg = str(e)
+            m_current = re.search(r"Current browser version is\s+(\d+)", msg)
+            forced_major = int(m_current.group(1)) if m_current else None
+            if not forced_major:
+                m_supports = re.search(r"only supports Chrome version\s+(\d+)", msg)
+                forced_major = int(m_supports.group(1)) if m_supports else None
+
+            if forced_major:
+                logger.info(f"Retrying with UC driver for Chrome {forced_major}")
+                minimal_options = uc.ChromeOptions()
+                minimal_options.add_argument("--no-sandbox")
+                minimal_options.add_argument("--disable-dev-shm-usage")
+                minimal_options.add_argument(f"--user-data-dir={profile_dir}")
+                if chrome_binary:
+                    minimal_options.binary_location = chrome_binary
+                try:
+                    return uc.Chrome(options=minimal_options, version_main=forced_major)
+                except TypeError as te:
+                    if "version_main" in str(te):
+                        logger.warning(
+                            "Your undetected_chromedriver is outdated and lacks version_main. "
+                            "Please upgrade: pip install -U undetected-chromedriver"
+                        )
+                        return uc.Chrome(options=minimal_options)
+                    raise
+
+        except Exception as retry_err:
+            logger.warning(f"Retry after parsing version failed: {str(retry_err)}")
+
+        # Last-resort minimal fallback
         try:
             logger.info("Trying fallback undetected Chrome with minimal options...")
             minimal_options = uc.ChromeOptions()
             minimal_options.add_argument("--no-sandbox")
             minimal_options.add_argument("--disable-dev-shm-usage")
             minimal_options.add_argument(f"--user-data-dir={profile_dir}")
-            driver = uc.Chrome(options=minimal_options)
-            return driver
+            if chrome_binary:
+                minimal_options.binary_location = chrome_binary
+            return uc.Chrome(options=minimal_options)
         except Exception as e2:
             logger.error(f"Final driver creation attempt failed: {str(e2)}")
             raise
@@ -629,32 +779,32 @@ def extract_cookies(driver):
     logger.info(f"Found {len(browser_cookies)} cookies total")
 
     cookie_values = {}
-    used_domain = "twitter.com"  # Always use twitter.com domain, no conditional check
+    # Always use x.com domain, no conditional check
+    used_domain = "x.com"
 
     for cookie in browser_cookies:
-        if cookie["name"] in COOKIE_NAMES:
-            value = cookie["value"]
-            if value.startswith('"') and value.endswith('"'):
-                value = value[1:-1]  # Remove surrounding quotes
-            value = value.replace('"', "")  # Replace any remaining quotes
+        value = cookie["value"]
+        if value.startswith('"') and value.endswith('"'):
+            value = value[1:-1]  # Remove surrounding quotes
+        value = value.replace('"', "")  # Replace any remaining quotes
 
-            cookie_values[cookie["name"]] = value
-            logger.info(f"Found cookie: {cookie['name']}")
+        cookie_values[cookie["name"]] = value
+        logger.info(f"Found cookie: {cookie['name']}")
 
-    # Log missing cookies
+    # Log missing known cookies (just for information)
     missing_cookies = [name for name in COOKIE_NAMES if name not in cookie_values]
     if missing_cookies:
-        logger.warning(f"Missing cookies: {', '.join(missing_cookies)}")
+        logger.warning(f"Missing expected cookies: {', '.join(missing_cookies)}")
     else:
-        logger.info("All required cookies found")
+        logger.info("All expected cookies found")
 
     return cookie_values, used_domain
 
 
-def generate_cookies_json(cookie_values, domain="twitter.com"):
+def generate_cookies_json(cookie_values, domain="x.com"):
     """Generate the cookies JSON from the provided cookie values."""
-    # Always use twitter.com domain regardless of what's passed in
-    domain = "twitter.com"
+    # Always use x.com domain regardless of what's passed in
+    domain = "x.com"
     logger.info(f"Generating cookies JSON for domain: {domain}")
 
     # Determine expiration dates for different cookie types
@@ -662,28 +812,38 @@ def generate_cookies_json(cookie_values, domain="twitter.com"):
     one_month_future = get_future_date(days=30)
 
     cookies = []
-    for name in COOKIE_NAMES:
-        value = cookie_values.get(name, "")
+    
+    # Process all found cookies
+    for name, value in cookie_values.items():
         if value == "":
-            logger.warning(f"Using empty string for missing cookie: {name}")
+            logger.warning(f"Using empty string for cookie: {name}")
 
         # Set appropriate expiration date based on cookie type
         if name in ["personalization_id", "kdt"]:
             # 1 month expiration for these cookies
             expires = one_month_future
-            logger.info(f"Setting {name} cookie to expire in 1 month: {expires}")
+            logger.debug(f"Setting {name} cookie to expire in 1 month: {expires}")
         elif name in ["auth_token", "ct0"]:
             # 1 week expiration for these cookies
             expires = one_week_future
-            logger.info(f"Setting {name} cookie to expire in 1 week: {expires}")
+            logger.debug(f"Setting {name} cookie to expire in 1 week: {expires}")
         else:
             # Default 1 week for all other cookies
             expires = one_week_future
-            logger.info(
+            logger.debug(
                 f"Setting {name} cookie to default expiration (1 week): {expires}"
             )
 
         cookies.append(create_cookie_template(name, value, domain, expires))
+    
+    # Ensure critical cookies exist in the list even if missing (with empty values)
+    # This maintains compatibility with previous behavior for COOKIE_NAMES
+    found_names = set(cookie_values.keys())
+    for name in COOKIE_NAMES:
+        if name not in found_names:
+            logger.warning(f"Adding empty placeholder for missing expected cookie: {name}")
+            # Use 1 week default for missing cookies
+            cookies.append(create_cookie_template(name, "", domain, one_week_future))
 
     return cookies
 
@@ -707,7 +867,7 @@ def process_account_state_machine(driver, username, password):
 
         # Wait for page to load using document readyState
         wait_start = time.time()
-        max_wait = 10  # Maximum seconds to wait
+        max_wait = 30  # Maximum seconds to wait
 
         while time.time() - wait_start < max_wait:
             # Check if document is ready
@@ -945,8 +1105,8 @@ def process_account_state_machine(driver, username, password):
             if "home" not in driver.current_url.lower():
                 logger.info("Navigating to home page to ensure all cookies are set")
                 try:
-                    # Always navigate to twitter.com, never x.com
-                    driver.get("https://twitter.com/home")
+                    # Always navigate to x.com
+                    driver.get("https://x.com/home")
                     time.sleep(3)
                 except WebDriverException as e:
                     # Check if window was closed
@@ -1024,6 +1184,7 @@ def main():
         # Maximum number of retries for account processing
         max_retries = 5  # Increased retries to allow for VPN switches
         retry_count = 0
+        consecutive_window_closes = 0
         driver = None
 
         account_pair = account_pairs[current_account_index]
@@ -1076,27 +1237,56 @@ def main():
                     "no such window" in str(e).lower()
                     or "no such session" in str(e).lower()
                 ):
-                    logger.info(
-                        "Browser window was closed. This might be for VPN switching."
-                    )
-                    logger.info(
-                        "Waiting 30 seconds for VPN to stabilize before retrying..."
-                    )
+                    consecutive_window_closes += 1
+                    
+                    if consecutive_window_closes > 3:
+                        logger.error(f"Window closed unexpectedly {consecutive_window_closes} times in a row. Treating as failure.")
+                        
+                        # Handle potential profile corruption by moving the profile directory
+                        try:
+                            profile_dir = os.path.join(OUTPUT_DIR, "profiles", username)
+                            if os.path.exists(profile_dir):
+                                timestamp = int(time.time())
+                                backup_path = f"{profile_dir}_corrupted_{timestamp}"
+                                logger.warning(f"Profile likely corrupted. Moving {profile_dir} to {backup_path}")
+                                # Close any lingering file handles before moving (best effort)
+                                if driver:
+                                    try:
+                                        driver.quit()
+                                    except:
+                                        pass
+                                    driver = None
+                                os.rename(profile_dir, backup_path)
+                                logger.info("Profile directory reset. Next attempt will start fresh.")
+                        except Exception as e:
+                            logger.error(f"Failed to move corrupted profile: {str(e)}")
 
-                    # Clean up the driver
-                    try:
-                        if driver:
-                            driver.quit()
-                    except:
-                        pass
+                        retry_count += 1
+                        # We don't continue here, so it will fall through to cleanup and loop check
+                    else:
+                        logger.info(
+                            f"Browser window was closed (occurrence {consecutive_window_closes}). This might be for VPN switching."
+                        )
+                        logger.info(
+                            "Waiting 30 seconds for VPN to stabilize before retrying..."
+                        )
 
-                    # Wait for VPN switch to complete
-                    time.sleep(30)
+                        # Clean up the driver
+                        try:
+                            if driver:
+                                driver.quit()
+                        except:
+                            pass
 
-                    # Don't increment retry count for intentional window closing
-                    # This allows unlimited VPN switches
-                    logger.info(f"Resuming after window close for account: {username}")
+                        # Wait for VPN switch to complete
+                        time.sleep(30)
+
+                        # Don't increment retry count for intentional window closing
+                        # This allows unlimited VPN switches
+                        logger.info(f"Resuming after window close for account: {username}")
+                        continue
                 else:
+                    consecutive_window_closes = 0  # Reset on different error
                     # Handle other WebDriver exceptions
                     retry_count += 1
                     logger.error(
@@ -1105,6 +1295,7 @@ def main():
                     time.sleep(15)
 
             except Exception as e:
+                consecutive_window_closes = 0  # Reset on different error
                 retry_count += 1
                 logger.error(
                     f"Unexpected error (attempt {retry_count}/{max_retries}): {str(e)}"
