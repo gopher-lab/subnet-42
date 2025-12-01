@@ -41,8 +41,8 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Twitter cookie names to extract
 COOKIE_NAMES = ["personalization_id", "kdt", "twid", "ct0", "auth_token", "att"]
 
-# Twitter domains to handle - We will only use twitter.com
-TWITTER_DOMAINS = ["twitter.com"]
+# Twitter domains to handle - We will only use x.com
+TWITTER_DOMAINS = ["x.com"]
 
 # Twitter login URL
 TWITTER_LOGIN_URL = "https://x.com/i/flow/login"
@@ -81,7 +81,7 @@ def get_future_date(days=7, hours=0, minutes=0, seconds=0):
     return future_date.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def create_cookie_template(name, value, domain="twitter.com", expires=None):
+def create_cookie_template(name, value, domain="x.com", expires=None):
     """
     Create a standard cookie template with the given name and value.
     Note: Cookie values should not contain double quotes as they cause errors in Go's HTTP client.
@@ -439,7 +439,7 @@ def setup_driver(username):
             try:
                 driver.execute_cdp_cmd(
                     "Browser.grantPermissions",
-                    {"permissions": ["geolocation"], "origin": "https://twitter.com"},
+                    {"permissions": ["geolocation"], "origin": "https://x.com"},
                 )
             except Exception:
                 pass
@@ -779,32 +779,32 @@ def extract_cookies(driver):
     logger.info(f"Found {len(browser_cookies)} cookies total")
 
     cookie_values = {}
-    used_domain = "twitter.com"  # Always use twitter.com domain, no conditional check
+    # Always use x.com domain, no conditional check
+    used_domain = "x.com"
 
     for cookie in browser_cookies:
-        if cookie["name"] in COOKIE_NAMES:
-            value = cookie["value"]
-            if value.startswith('"') and value.endswith('"'):
-                value = value[1:-1]  # Remove surrounding quotes
-            value = value.replace('"', "")  # Replace any remaining quotes
+        value = cookie["value"]
+        if value.startswith('"') and value.endswith('"'):
+            value = value[1:-1]  # Remove surrounding quotes
+        value = value.replace('"', "")  # Replace any remaining quotes
 
-            cookie_values[cookie["name"]] = value
-            logger.info(f"Found cookie: {cookie['name']}")
+        cookie_values[cookie["name"]] = value
+        logger.info(f"Found cookie: {cookie['name']}")
 
-    # Log missing cookies
+    # Log missing known cookies (just for information)
     missing_cookies = [name for name in COOKIE_NAMES if name not in cookie_values]
     if missing_cookies:
-        logger.warning(f"Missing cookies: {', '.join(missing_cookies)}")
+        logger.warning(f"Missing expected cookies: {', '.join(missing_cookies)}")
     else:
-        logger.info("All required cookies found")
+        logger.info("All expected cookies found")
 
     return cookie_values, used_domain
 
 
-def generate_cookies_json(cookie_values, domain="twitter.com"):
+def generate_cookies_json(cookie_values, domain="x.com"):
     """Generate the cookies JSON from the provided cookie values."""
-    # Always use twitter.com domain regardless of what's passed in
-    domain = "twitter.com"
+    # Always use x.com domain regardless of what's passed in
+    domain = "x.com"
     logger.info(f"Generating cookies JSON for domain: {domain}")
 
     # Determine expiration dates for different cookie types
@@ -812,28 +812,38 @@ def generate_cookies_json(cookie_values, domain="twitter.com"):
     one_month_future = get_future_date(days=30)
 
     cookies = []
-    for name in COOKIE_NAMES:
-        value = cookie_values.get(name, "")
+    
+    # Process all found cookies
+    for name, value in cookie_values.items():
         if value == "":
-            logger.warning(f"Using empty string for missing cookie: {name}")
+            logger.warning(f"Using empty string for cookie: {name}")
 
         # Set appropriate expiration date based on cookie type
         if name in ["personalization_id", "kdt"]:
             # 1 month expiration for these cookies
             expires = one_month_future
-            logger.info(f"Setting {name} cookie to expire in 1 month: {expires}")
+            logger.debug(f"Setting {name} cookie to expire in 1 month: {expires}")
         elif name in ["auth_token", "ct0"]:
             # 1 week expiration for these cookies
             expires = one_week_future
-            logger.info(f"Setting {name} cookie to expire in 1 week: {expires}")
+            logger.debug(f"Setting {name} cookie to expire in 1 week: {expires}")
         else:
             # Default 1 week for all other cookies
             expires = one_week_future
-            logger.info(
+            logger.debug(
                 f"Setting {name} cookie to default expiration (1 week): {expires}"
             )
 
         cookies.append(create_cookie_template(name, value, domain, expires))
+    
+    # Ensure critical cookies exist in the list even if missing (with empty values)
+    # This maintains compatibility with previous behavior for COOKIE_NAMES
+    found_names = set(cookie_values.keys())
+    for name in COOKIE_NAMES:
+        if name not in found_names:
+            logger.warning(f"Adding empty placeholder for missing expected cookie: {name}")
+            # Use 1 week default for missing cookies
+            cookies.append(create_cookie_template(name, "", domain, one_week_future))
 
     return cookies
 
@@ -1095,8 +1105,8 @@ def process_account_state_machine(driver, username, password):
             if "home" not in driver.current_url.lower():
                 logger.info("Navigating to home page to ensure all cookies are set")
                 try:
-                    # Always navigate to twitter.com, never x.com
-                    driver.get("https://twitter.com/home")
+                    # Always navigate to x.com
+                    driver.get("https://x.com/home")
                     time.sleep(3)
                 except WebDriverException as e:
                     # Check if window was closed
