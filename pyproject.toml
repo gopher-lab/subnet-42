@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Subnet 42 implementation using Fiber"
 requires-python = ">=3.10"
 dependencies = [
+    # Pin these first to avoid dependency conflicts
+    "cryptography>=42.0.0",
+    "setuptools==70.0.0",  # bittensor-commit-reveal requires ~=70.0.0
     "fastapi==0.110.3",
     "uvicorn==0.30.5",
     "httpx==0.27.0",
@@ -16,10 +19,9 @@ dependencies = [
     "nats-py==2.6.0",
     "scikit-learn",
     "psycopg2-binary==2.9.10",
-    "cryptography",
     "bittensor",
-    "bittensor-commit-reveal",
-    "fiber @ git+https://github.com/5u6r054/fiber.git@fix/remove-bittensor-commit-reveal-dependency",
+    # "fiber @ git+https://github.com/5u6r054/fiber.git@fix/remove-bittensor-commit-reveal-dependency",
+    "fiber @ git+https://github.com/chutesai/fiber.git@production",  # latest from production branch
     "selenium",
     "undetected-chromedriver"
 ]
