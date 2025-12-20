@@ -183,6 +183,8 @@ class Validator:
             endpoint=endpoint,
             connected_nodes=self.node_manager.connected_nodes,
             validator_ss58_address=self.keypair.ss58_address,
+            miner_ss58_address=node.hotkey,
+            keypair=self.keypair,
         )
 
     async def make_non_streamed_post(
