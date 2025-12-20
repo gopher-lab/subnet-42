@@ -14,6 +14,8 @@ async def make_non_streamed_get(
     endpoint: str,
     connected_nodes: dict,
     validator_ss58_address: str,
+    miner_ss58_address: str,
+    keypair: Any,
 ) -> Optional[Any]:
     """
     Make a non-streamed GET request to a node.
@@ -23,6 +25,8 @@ async def make_non_streamed_get(
     :param endpoint: The endpoint to request.
     :param connected_nodes: A dictionary of connected nodes.
     :param validator_ss58_address: The validator's SS58 address.
+    :param miner_ss58_address: The miner's SS58 address.
+    :param keypair: The keypair used for the request.
     :return: The response JSON if successful, None otherwise.
     """
     registered_node = connected_nodes.get(node.hotkey)
@@ -37,6 +41,9 @@ async def make_non_streamed_get(
         symmetric_key_uuid=registered_node.symmetric_key_uuid,
         endpoint=endpoint,
         validator_ss58_address=validator_ss58_address,
+        miner_ss58_address=miner_ss58_address,
+        keypair=keypair,
+        fernet=registered_node.fernet,
     )
     if response.status_code == 200:
         return response.json()
