@@ -4,8 +4,11 @@ import pathlib
 
 
 def init_wallet():
-    # Disable bittensor logging during wallet operations
-    bt.logging.disable_logging()
+    # Disable bittensor logging during wallet operations (v8 uses state machine)
+    try:
+        bt.logging.disable_logging()
+    except Exception:
+        pass  # Ignore if logging state doesn't allow transition
 
     try:
         # Initialize wallet - always use default names
@@ -49,8 +52,11 @@ def init_wallet():
         print(f"Error initializing wallet: {e}")
         raise e
     finally:
-        # Re-enable default logging
-        bt.logging.enable_default()
+        # Re-enable default logging (v8 uses state machine)
+        try:
+            bt.logging.enable_default()
+        except Exception:
+            pass  # Ignore if logging state doesn't allow transition
 
 
 if __name__ == "__main__":
