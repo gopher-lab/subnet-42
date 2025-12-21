@@ -43,7 +43,6 @@ async def make_non_streamed_get(
         validator_ss58_address=validator_ss58_address,
         miner_ss58_address=miner_ss58_address,
         keypair=keypair,
-        fernet=registered_node.fernet,
     )
     if response.status_code == 200:
         return response.json()
@@ -87,7 +86,6 @@ async def make_non_streamed_post(
         validator_ss58_address=validator_ss58_address,
         miner_ss58_address=node.hotkey,
         keypair=keypair,
-        fernet=connected_node.fernet,
         payload=payload,
     )
 
