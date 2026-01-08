@@ -64,7 +64,7 @@ class PlatformManager:
         self.platforms: Dict[str, PlatformConfig] = {
             "twitter": PlatformConfig(
                 name="twitter",
-                emission_weight=0.35,
+                emission_weight=0.7,
                 metrics=[
                     "scrapes",
                     "tweets",
@@ -85,7 +85,7 @@ class PlatformManager:
             ),
             "twitter-apify": PlatformConfig(
                 name="twitter-apify",
-                emission_weight=0.15,
+                emission_weight=0.05,
                 metrics=[
                     "followers",
                     "errors",
@@ -111,7 +111,7 @@ class PlatformManager:
             ),
             "tiktok-search": PlatformConfig(
                 name="tiktok-search",
-                emission_weight=0.15,
+                emission_weight=0.05,
                 metrics=["queries", "videos", "errors"],
                 error_metrics=["errors"],
                 success_metrics=["videos"],
@@ -124,7 +124,7 @@ class PlatformManager:
             ),
             "web": PlatformConfig(
                 name="web",
-                emission_weight=0.1,
+                emission_weight=0.05,
                 metrics=["queries", "pages", "errors"],
                 error_metrics=["errors"],
                 success_metrics=["pages"],
@@ -137,7 +137,7 @@ class PlatformManager:
             ),
             "reddit": PlatformConfig(
                 name="reddit",
-                emission_weight=0.1,
+                emission_weight=0.05,
                 metrics=["items", "errors", "queries"],
                 error_metrics=["errors"],
                 success_metrics=["items"],
@@ -150,7 +150,7 @@ class PlatformManager:
             ),
             "linkedin": PlatformConfig(
                 name="linkedin",
-                emission_weight=0.1,
+                emission_weight=0.05,
                 metrics=["profiles", "errors", "queries"],
                 error_metrics=["errors"],
                 success_metrics=["profiles"],
