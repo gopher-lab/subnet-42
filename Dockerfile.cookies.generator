@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 # Update package repositories and install Chromium dependencies
 RUN apt-get update && apt-get install -y \
@@ -32,7 +32,7 @@ RUN echo '#!/bin/bash\nXvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +rende
 RUN pip install --no-cache-dir \
     requests==2.31.0 \
     python-dotenv==1.0.0 \
-    selenium==4.14.0 \
+    selenium==4.11.2 \
     webdriver-manager==4.0.1 \
     selenium-stealth==1.0.6 \
     undetected-chromedriver==3.5.3 \
@@ -55,6 +55,6 @@ ENV RUNNING_IN_DOCKER=true
 RUN apt-get update && apt-get install -y x11vnc
 RUN echo '#!/bin/bash\nXvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &\nsleep 2\nif [ "$ENABLE_VNC" = "true" ]; then\n  x11vnc -display :99 -forever -nopw -quiet &\n  echo "VNC server started on port 5900"\nfi\nexec "$@"' > /entrypoint.sh && \
     chmod +x /entrypoint.sh
-
+RUN python3 -c "import undetected_chromedriver as uc; uc.Chrome(version_main=144, headless=True).quit()" || true
 # Use the Xvfb entrypoint
 ENTRYPOINT ["/entrypoint.sh", "python", "/app/cookie_grabber.py"]
