@@ -39,9 +39,9 @@ class RoutingTable:
                             (old_hotkey,)
                         )
                         count = cursor.fetchone()[0]
-                        if count <= 1:  # Only this entry exists (or none)
+                        if count == 1:  # Only this entry exists (likely orphaned from deregistered miner)
                             logger.warning(
-                                f"Address {address} exists for hotkey {old_hotkey} with {count} entry(ies). "
+                                f"Address {address} exists for hotkey {old_hotkey} with only 1 entry. "
                                 f"Removing orphaned entry to allow registration for {hotkey}."
                             )
                             cursor.execute(
