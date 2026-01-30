@@ -286,13 +286,78 @@ def get_chrome_major_version(chrome_binary: str | None) -> int | None:
     return None
 
 
+def kill_orphan_chrome_processes():
+    """Kill any orphaned Chrome processes that might be locking the profile."""
+    try:
+        import signal
+        # Find Chrome processes using undetected_chromedriver paths
+        result = subprocess.run(
+            ["pgrep", "-f", "undetected_chromedriver"],
+            capture_output=True,
+            text=True
+        )
+        if result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                    logger.info(f"Killed orphaned chromedriver process: {pid}")
+                except (ProcessLookupError, ValueError):
+                    pass
+    except Exception as e:
+        logger.debug(f"Error checking for orphaned processes: {e}")
+
+
+def clear_profile_cache(profile_dir):
+    """Clear cache and temporary files from profile to prevent slowdowns."""
+    cache_dirs = [
+        os.path.join(profile_dir, "Default", "Cache"),
+        os.path.join(profile_dir, "Default", "Code Cache"),
+        os.path.join(profile_dir, "Default", "GPUCache"),
+        os.path.join(profile_dir, "Default", "Service Worker"),
+        os.path.join(profile_dir, "Default", "DawnCache"),
+        os.path.join(profile_dir, "Default", "ShaderCache"),
+        os.path.join(profile_dir, "GrShaderCache"),
+        os.path.join(profile_dir, "ShaderCache"),
+    ]
+    
+    # Also clear lock files that can cause issues
+    lock_files = [
+        os.path.join(profile_dir, "SingletonLock"),
+        os.path.join(profile_dir, "SingletonCookie"),
+        os.path.join(profile_dir, "SingletonSocket"),
+    ]
+    
+    for lock_file in lock_files:
+        try:
+            if os.path.exists(lock_file):
+                os.remove(lock_file)
+                logger.debug(f"Removed lock file: {lock_file}")
+        except Exception as e:
+            logger.debug(f"Could not remove lock file {lock_file}: {e}")
+    
+    for cache_dir in cache_dirs:
+        try:
+            if os.path.exists(cache_dir):
+                shutil.rmtree(cache_dir)
+                logger.debug(f"Cleared cache directory: {cache_dir}")
+        except Exception as e:
+            logger.debug(f"Could not clear cache {cache_dir}: {e}")
+
+
 def setup_driver(username):
     """Set up and return an undetected Chrome driver with a persistent profile per account."""
     logger.info("Setting up undetected Chrome driver...")
+    
+    # Kill any orphaned Chrome processes first
+    kill_orphan_chrome_processes()
 
     # Build a persistent per-account profile directory
     profile_dir = os.path.join(OUTPUT_DIR, "profiles", username)
     os.makedirs(profile_dir, exist_ok=True)
+
+    # Clear cache to prevent slowdowns on subsequent runs
+    clear_profile_cache(profile_dir)
 
     # Enhance profile with realistic history/bookmarks if it's a new profile
     if not os.path.exists(os.path.join(profile_dir, "Default")):
@@ -309,6 +374,22 @@ def setup_driver(username):
     options.add_argument(f"--user-data-dir={profile_dir}")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    
+    # Performance and stability improvements
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-background-timer-throttling")
+    options.add_argument("--disable-backgrounding-occluded-windows")
+    options.add_argument("--disable-renderer-backgrounding")
+    options.add_argument("--disable-features=TranslateUI")
+    options.add_argument("--disable-sync")
+    options.add_argument("--disable-extensions-except=")
+    options.add_argument("--disable-default-apps")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
+    
+    # Reduce memory/resource usage
+    options.add_argument("--disable-component-update")
+    options.add_argument("--disable-domain-reliability")
 
     # Resolve Chrome binary path
     chrome_binary = resolve_chrome_binary()
@@ -659,33 +740,58 @@ def is_logged_in(driver):
     """Check if user is logged in to Twitter."""
     try:
         current_url = driver.current_url.lower()
+        logger.debug(f"Checking login status, current URL: {current_url}")
 
-        # URL check (most reliable)
-        if "twitter.com/home" in current_url or "x.com/home" in current_url:
+        # URL check (most reliable) - check for /home anywhere in URL
+        if "/home" in current_url and ("twitter.com" in current_url or "x.com" in current_url):
+            logger.info(f"Detected logged in via URL: {current_url}")
             return True
+        
+        # Also check if we're on the main feed (sometimes URL is just x.com/)
+        if current_url.rstrip('/') in ["https://x.com", "https://twitter.com"]:
+            # Check if we see home timeline elements
+            pass  # Fall through to element checks
 
         # Home timeline check
         home_timeline = driver.find_elements(
             By.CSS_SELECTOR, 'div[aria-label="Timeline: Your Home Timeline"]'
         )
         if home_timeline and any(elem.is_displayed() for elem in home_timeline):
+            logger.info("Detected logged in via home timeline element")
             return True
 
-        # Tweet/Post button check
+        # Tweet/Post button check - updated selectors for current X.com
         tweet_buttons = driver.find_elements(
             By.CSS_SELECTOR,
-            'a[data-testid="SideNav_NewTweet_Button"], [data-testid="tweetButtonInline"]',
+            'a[data-testid="SideNav_NewTweet_Button"], [data-testid="tweetButtonInline"], a[href="/compose/post"], [data-testid="SideNav_NewPost_Button"]',
         )
         if tweet_buttons and any(btn.is_displayed() for btn in tweet_buttons):
+            logger.info("Detected logged in via tweet/post button")
             return True
 
-        # Navigation elements check
+        # Navigation elements check - updated selectors
         nav_elements = driver.find_elements(
             By.CSS_SELECTOR,
-            'nav[role="navigation"], a[data-testid="AppTabBar_Home_Link"]',
+            'nav[role="navigation"], a[data-testid="AppTabBar_Home_Link"], a[href="/home"]',
         )
         if nav_elements and any(elem.is_displayed() for elem in nav_elements):
+            logger.info("Detected logged in via navigation elements")
             return True
+        
+        # Check for the main timeline/feed area (generic check)
+        main_content = driver.find_elements(
+            By.CSS_SELECTOR,
+            '[data-testid="primaryColumn"], main[role="main"]'
+        )
+        # Also check we're not on login flow
+        login_elements = driver.find_elements(
+            By.CSS_SELECTOR,
+            'input[name="text"], input[name="password"], [data-testid="LoginForm"]'
+        )
+        if main_content and any(elem.is_displayed() for elem in main_content):
+            if not (login_elements and any(elem.is_displayed() for elem in login_elements)):
+                logger.info("Detected logged in via main content area (no login form visible)")
+                return True
 
         return False
     except Exception as e:
@@ -923,9 +1029,15 @@ def process_account_state_machine(driver, username, password):
     manual_intervention_active = False
 
     # State machine loop
+    loop_count = 0
     while time.time() - start_time < WAITING_TIME:
+        loop_count += 1
         try:
             current_url = driver.current_url
+            
+            # Log every 10 iterations to show we're still alive
+            if loop_count % 10 == 0:
+                logger.info(f"State machine loop iteration {loop_count}, URL: {current_url}")
 
             # Check if already logged in
             if is_logged_in(driver):
@@ -1101,15 +1213,19 @@ def process_account_state_machine(driver, username, password):
     # After the loop, check if login was successful
     if login_successful:
         try:
-            # Ensure we're on the home page
-            if "home" not in driver.current_url.lower():
-                logger.info("Navigating to home page to ensure all cookies are set")
+            # Give cookies a moment to be fully set
+            logger.info("Login detected, waiting briefly for cookies to be set...")
+            time.sleep(2)
+            
+            # We don't need to navigate to home - cookies are already set after login
+            # Just make sure we're on an x.com page (not a redirect or error)
+            current = driver.current_url.lower()
+            if "x.com" not in current and "twitter.com" not in current:
+                logger.info("Not on X/Twitter domain, navigating to ensure cookies are accessible")
                 try:
-                    # Always navigate to x.com
                     driver.get("https://x.com/home")
-                    time.sleep(3)
+                    time.sleep(3)  # Brief wait, don't need full page load
                 except WebDriverException as e:
-                    # Check if window was closed
                     if (
                         "no such window" in str(e).lower()
                         or "no such session" in str(e).lower()
@@ -1118,7 +1234,9 @@ def process_account_state_machine(driver, username, password):
                             "Browser window was closed after login. Might be for VPN switching."
                         )
                         raise
-                    logger.warning(f"Failed to navigate to home page: {str(e)}")
+                    logger.warning(f"Failed to navigate: {str(e)}")
+            else:
+                logger.info(f"On X/Twitter domain, extracting cookies from: {current}")
 
             # Extract and save cookies
             cookie_values, domain = extract_cookies(driver)

@@ -467,19 +467,30 @@ class NodeManager:
             )
 
             # This checks that a worker address is only owned by the first node that requests it
-            # For removing this restriction please communicate on discord
+            # Allow reassignment if the old hotkey is no longer registered in the metagraph
             if is_worker_already_owned:
-                logger.warning(
-                    f"Worker ID {worker_id} is already registered to another hotkey. "
-                    f"({worker_hotkey}) Skipping registration for {hotkey}."
-                )
-                self.errors_storage.add_error(
-                    hotkey=hotkey,
-                    tee_address=tee_address,
-                    miner_address=f"{node.ip}:{node.port}",
-                    message=f"Skipped: Worker ID {worker_id} already registered to hotkey {worker_hotkey}",
-                )
-                return
+                # Check if the old hotkey is still registered in the metagraph
+                if worker_hotkey in self.validator.metagraph.nodes:
+                    # Old hotkey is still registered, block this registration
+                    logger.warning(
+                        f"Worker ID {worker_id} is already registered to another hotkey. "
+                        f"({worker_hotkey}) Skipping registration for {hotkey}."
+                    )
+                    self.errors_storage.add_error(
+                        hotkey=hotkey,
+                        tee_address=tee_address,
+                        miner_address=f"{node.ip}:{node.port}",
+                        message=f"Skipped: Worker ID {worker_id} already registered to hotkey {worker_hotkey}",
+                    )
+                    return
+                else:
+                    # Old hotkey is deregistered, allow reassignment
+                    logger.info(
+                        f"Worker ID {worker_id} was registered to deregistered hotkey {worker_hotkey}. "
+                        f"Allowing reassignment to {hotkey}."
+                    )
+                    # Unregister the old mapping to allow new registration
+                    self.validator.routing_table.unregister_worker(worker_id)
 
             # Register the worker and TEE address
             await self._register_tee_address(
@@ -492,14 +503,47 @@ class NodeManager:
                 verified_entries,
             )
 
-        except sqlite3.IntegrityError:
-            logger.debug(f"Address {tee_address} already exists for another miner")
-            self.errors_storage.add_error(
-                hotkey=hotkey,
-                tee_address=tee_address,
-                miner_address=f"{node.ip}:{node.port}",
-                message="Address already exists for another miner",
-            )
+        except sqlite3.IntegrityError as e:
+            # Handle UNIQUE constraint violation for address
+            error_msg = str(e)
+            if "UNIQUE constraint failed: miner_addresses.address" in error_msg:
+                logger.warning(
+                    f"Address {tee_address} already exists in database for another miner. "
+                    f"Attempting to resolve conflict for hotkey {hotkey}."
+                )
+                # Try to remove the conflicting address entry if it's orphaned
+                # (This is a fallback - add_miner_address should have handled it, but just in case)
+                try:
+                    self.validator.routing_table.remove_miner_address_by_address(tee_address)
+                    logger.info(f"Removed conflicting address entry for {tee_address}, retrying registration")
+                    # Retry registration
+                    await self._register_tee_address(
+                        routing_table,
+                        hotkey,
+                        node,
+                        tee_address,
+                        worker_id,
+                        worker_hotkey,
+                        verified_entries,
+                    )
+                except Exception as retry_error:
+                    logger.error(
+                        f"Failed to resolve address conflict for {tee_address}: {retry_error}"
+                    )
+                    self.errors_storage.add_error(
+                        hotkey=hotkey,
+                        tee_address=tee_address,
+                        miner_address=f"{node.ip}:{node.port}",
+                        message=f"Address conflict could not be resolved: {retry_error}",
+                    )
+            else:
+                logger.debug(f"Address {tee_address} already exists for another miner: {e}")
+                self.errors_storage.add_error(
+                    hotkey=hotkey,
+                    tee_address=tee_address,
+                    miner_address=f"{node.ip}:{node.port}",
+                    message=f"Database integrity error: {e}",
+                )
         except Exception as e:
             logger.error(
                 f"Error registering TEE address {tee_address} for hotkey {hotkey}: {str(e)}"
