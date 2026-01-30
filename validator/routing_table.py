@@ -21,6 +21,42 @@ class RoutingTable:
                 f"address={address}, worker_id={worker_id}"
             )
 
+            # Check if address exists with a different hotkey (orphaned entry)
+            try:
+                with self.db.lock, sqlite3.connect(self.db.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT hotkey FROM miner_addresses WHERE address = ?",
+                        (address,)
+                    )
+                    existing = cursor.fetchone()
+                    if existing and existing[0] != hotkey:
+                        old_hotkey = existing[0]
+                        # Check if old hotkey has any other entries (if not, it's likely deregistered)
+                        # Query directly to avoid lock re-acquisition
+                        cursor.execute(
+                            "SELECT COUNT(*) FROM miner_addresses WHERE hotkey = ?",
+                            (old_hotkey,)
+                        )
+                        count = cursor.fetchone()[0]
+                        if count <= 1:  # Only this entry exists (or none)
+                            logger.warning(
+                                f"Address {address} exists for hotkey {old_hotkey} with {count} entry(ies). "
+                                f"Removing orphaned entry to allow registration for {hotkey}."
+                            )
+                            cursor.execute(
+                                "DELETE FROM miner_addresses WHERE address = ?",
+                                (address,)
+                            )
+                            conn.commit()
+                        else:
+                            logger.warning(
+                                f"Address {address} already exists for hotkey {old_hotkey} with {count} entries. "
+                                f"Cannot register for {hotkey} due to UNIQUE constraint."
+                            )
+            except sqlite3.Error as e:
+                logger.debug(f"Error checking for existing address: {e}")
+
             # Check if there's already an entry with the exact same fields
             existing_entries = self.db.get_miner_addresses_by_hotkey(hotkey)
             for existing_uid, existing_address, existing_worker_id in existing_entries:
@@ -54,7 +90,10 @@ class RoutingTable:
         except sqlite3.Error as e:
             error_msg = str(e)
             if "UNIQUE constraint failed: miner_addresses.address" in error_msg:
-                logger.debug(f"Address {address} is already registered in the system")
+                logger.warning(
+                    f"Address {address} is already registered in the system with a different hotkey. "
+                    f"Registration failed for hotkey {hotkey}."
+                )
             else:
                 logger.error(f"Failed to add address: {e}")
 
@@ -99,6 +138,9 @@ class RoutingTable:
                     (hotkey,),
                 )
                 conn.commit()
+            # Also clean up worker registry for this hotkey
+            self.unregister_workers_by_hotkey(hotkey)
+            logger.info(f"Cleared all addresses and worker registrations for hotkey {hotkey}")
         except sqlite3.Error as e:
             logger.error(f"Failed to clear miner: {e}")
 
