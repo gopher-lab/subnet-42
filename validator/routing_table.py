@@ -27,7 +27,7 @@ class RoutingTable:
                     cursor = conn.cursor()
                     cursor.execute(
                         "SELECT hotkey FROM miner_addresses WHERE address = ?",
-                        (address,)
+                        (address,),
                     )
                     existing = cursor.fetchone()
                     if existing and existing[0] != hotkey:
@@ -36,17 +36,19 @@ class RoutingTable:
                         # Query directly to avoid lock re-acquisition
                         cursor.execute(
                             "SELECT COUNT(*) FROM miner_addresses WHERE hotkey = ?",
-                            (old_hotkey,)
+                            (old_hotkey,),
                         )
                         count = cursor.fetchone()[0]
-                        if count == 1:  # Only this entry exists (likely orphaned from deregistered miner)
+                        if (
+                            count == 1
+                        ):  # Only this entry exists (likely orphaned from deregistered miner)
                             logger.warning(
                                 f"Address {address} exists for hotkey {old_hotkey} with only 1 entry. "
                                 f"Removing orphaned entry to allow registration for {hotkey}."
                             )
                             cursor.execute(
                                 "DELETE FROM miner_addresses WHERE address = ?",
-                                (address,)
+                                (address,),
                             )
                             conn.commit()
                         else:
@@ -140,7 +142,9 @@ class RoutingTable:
                 conn.commit()
             # Also clean up worker registry for this hotkey
             self.unregister_workers_by_hotkey(hotkey)
-            logger.info(f"Cleared all addresses and worker registrations for hotkey {hotkey}")
+            logger.info(
+                f"Cleared all addresses and worker registrations for hotkey {hotkey}"
+            )
         except sqlite3.Error as e:
             logger.error(f"Failed to clear miner: {e}")
 
