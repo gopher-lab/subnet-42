@@ -36,7 +36,10 @@ fi
 KUBECTL_TIMEOUT=${KUBECTL_TIMEOUT:-300}  # 5 minutes default
 MAX_RETRIES=${MAX_RETRIES:-3}
 RETRY_DELAY=${RETRY_DELAY:-5}
-MAX_PARALLEL_COPIES=${MAX_PARALLEL_COPIES:-10}  # Maximum parallel copy operations
+MAX_PARALLEL_COPIES=${MAX_PARALLEL_COPIES:-10}  # Maximum parallel copy operations (per-file mode only)
+
+# Bulk copy: tar all JSON files and copy one tarball per pod, then extract (much faster than N separate kubectl cp).
+USE_TAR_BULK_COPY=${USE_TAR_BULK_COPY:-true}
 
 # Container selection configuration
 # If CONTAINER_NAME is provided, it will be used exactly.
@@ -51,6 +54,7 @@ echo "Namespace: $NAMESPACE"
 echo "Kubectl timeout: ${KUBECTL_TIMEOUT}s"
 echo "Max retries: $MAX_RETRIES"
 echo "Max parallel copies: $MAX_PARALLEL_COPIES"
+echo "Bulk tar copy: $USE_TAR_BULK_COPY"
 
 # Resolve kubeconfig path from env (fallback to ./kubeconfig.yaml)
 KUBECONFIG_PATH="${KUBE_CONFIG_FILE:-./kubeconfig.yaml}"
@@ -113,6 +117,74 @@ get_target_container() {
     fi
 
     echo ""
+}
+
+# Copy all cookie JSON files to a pod in one shot: tar locally, kubectl cp tarball, extract in pod.
+# Much faster than one kubectl cp per file when many JSON files exist.
+copy_bulk_tar_to_pod() {
+    local pod_name="$1"
+    local namespace="$2"
+    local container_name="$3"
+    local cookie_dir="$4"
+    local kubeconfig="$5"
+    local tmp_tar="/tmp/cookies_$$.tar"
+    local remote_tar="/home/masa/cookies_$$.tar"
+
+    if [ ! -d "$cookie_dir" ] || [ -z "$(ls -A "$cookie_dir"/*.json 2>/dev/null)" ]; then
+        echo "No JSON files in $cookie_dir, skipping bulk copy"
+        return 0
+    fi
+
+    echo "Creating tarball of cookie JSON files..."
+    if ! ( cd "$cookie_dir" && tar -cf "$tmp_tar" *.json ); then
+        echo "Failed to create tarball"
+        return 1
+    fi
+    local tar_size
+    tar_size=$(stat -c%s "$tmp_tar" 2>/dev/null || stat -f%z "$tmp_tar" 2>/dev/null)
+    echo "Tarball size: ${tar_size:-?} bytes"
+
+    kubectl_cp() {
+        if [ -n "$container_name" ]; then
+            timeout "$KUBECTL_TIMEOUT" kubectl --kubeconfig "$kubeconfig" --insecure-skip-tls-verify cp "$tmp_tar" "$namespace/$pod_name:$remote_tar" -c "$container_name" --request-timeout="${KUBECTL_TIMEOUT}s"
+        else
+            timeout "$KUBECTL_TIMEOUT" kubectl --kubeconfig "$kubeconfig" --insecure-skip-tls-verify cp "$tmp_tar" "$namespace/$pod_name:$remote_tar" --request-timeout="${KUBECTL_TIMEOUT}s"
+        fi
+    }
+    kubectl_exec() {
+        local cmd="$1"
+        if [ -n "$container_name" ]; then
+            kubectl --kubeconfig "$kubeconfig" --insecure-skip-tls-verify exec -n "$namespace" "$pod_name" -c "$container_name" --request-timeout="${KUBECTL_TIMEOUT}s" -- /bin/sh -c "$cmd"
+        else
+            kubectl --kubeconfig "$kubeconfig" --insecure-skip-tls-verify exec -n "$namespace" "$pod_name" --request-timeout="${KUBECTL_TIMEOUT}s" -- /bin/sh -c "$cmd"
+        fi
+    }
+
+    for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
+        echo "Copying tarball to pod (attempt $attempt/$MAX_RETRIES)..."
+        if kubectl_cp; then
+            break
+        fi
+        if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+            echo "Waiting ${RETRY_DELAY}s before retry..."
+            sleep "$RETRY_DELAY"
+        else
+            rm -f "$tmp_tar"
+            echo "✗ Failed to copy tarball after $MAX_RETRIES attempts"
+            return 1
+        fi
+    done
+
+    echo "Extracting tarball in pod..."
+    if ! kubectl_exec "tar -xf $remote_tar -C /home/masa && rm -f $remote_tar"; then
+        kubectl_exec "rm -f $remote_tar" 2>/dev/null
+        rm -f "$tmp_tar"
+        echo "✗ Failed to extract tarball in pod"
+        return 1
+    fi
+    rm -f "$tmp_tar"
+    echo "✓ Bulk copy completed successfully"
+    return 0
 }
 
 # Function to copy file with retry logic
@@ -229,26 +301,28 @@ for deployment in "${DEPLOYMENT_ARRAY[@]}"; do
         echo "Warning: Could not auto-detect target container; will try common worker patterns"
     fi
     echo "Copying cookie files to /home/masa/..."
-    
-    # Copy all JSON cookie files to the worker container in parallel
-    declare -a bg_pids=()
+
+    COOKIES_DIR="${COOKIES_DIR:-./cookies}"
+    # Collect all files (for count and for fallback per-file mode)
     declare -a file_list=()
-    
-    # Collect all files to process
-    for file in ./cookies/*.json; do
+    for file in "$COOKIES_DIR"/*.json; do
         if [ -f "$file" ]; then
             file_list+=("$file")
         fi
     done
-    
+
     if [ ${#file_list[@]} -eq 0 ]; then
         echo "No cookie files found to copy"
+    elif [ "$USE_TAR_BULK_COPY" = "true" ]; then
+        # Fast path: one tarball per pod, single copy + extract
+        if ! copy_bulk_tar_to_pod "$POD_NAME" "$NAMESPACE" "$TARGET_CONTAINER" "$COOKIES_DIR" "$KUBECONFIG_PATH"; then
+            OVERALL_SUCCESS=false
+            FAILED_FILES+=("(bulk tarball) -> $deployment")
+        fi
     else
+        # Per-file path: parallel kubectl cp (slower, more retries per file)
         echo "Starting parallel copy of ${#file_list[@]} files (max ${MAX_PARALLEL_COPIES} concurrent)..."
-        
-        # Process files in batches to limit concurrent operations
         for ((i=0; i<${#file_list[@]}; i+=MAX_PARALLEL_COPIES)); do
-            # Start a batch of parallel processes
             batch_pids=()
             for ((j=i; j<i+MAX_PARALLEL_COPIES && j<${#file_list[@]}; j++)); do
                 file="${file_list[$j]}"
@@ -259,14 +333,10 @@ for deployment in "${DEPLOYMENT_ARRAY[@]}"; do
                 ) &
                 batch_pids+=($!)
             done
-            
-            # Wait for this batch to complete
             for pid in "${batch_pids[@]}"; do
                 wait "$pid"
             done
         done
-        
-        # Check for failures
         for file in "${file_list[@]}"; do
             if [ -f "/tmp/failed_$(basename "$file")_$$" ]; then
                 OVERALL_SUCCESS=false

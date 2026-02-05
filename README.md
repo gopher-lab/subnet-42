@@ -153,6 +153,7 @@ This will:
   ```env
   DEPLOYMENTS=deployment1,deployment2,deployment3  # Comma-separated list of deployments
   NAMESPACE=your-namespace                         # Kubernetes namespace
+  # Optional: USE_TAR_BULK_COPY=true (default) uploads one tarball per pod for much faster uploads
   ```
 
 ### Upload Existing Cookies Only
