@@ -38,7 +38,7 @@ else:
 # Ensure output directory exists
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Twitter cookie names to extract
+# Cookie names we commonly observe from X sessions (informational).
 COOKIE_NAMES = ["personalization_id", "kdt", "twid", "ct0", "auth_token", "att"]
 
 # Twitter domains to handle - We will only use x.com
@@ -51,6 +51,9 @@ TWITTER_LOGIN_URL = "https://x.com/i/flow/login"
 POLLING_INTERVAL = 1  # Check every 1 second
 WAITING_TIME = 300  # Wait up to 5 minutes for manual verification
 CLICK_WAIT = 5  # Wait 5 seconds after clicking buttons
+POST_LOGIN_COOKIE_WAIT = 15  # Wait up to 15s for session cookies
+POST_LOGIN_COOKIE_POLL_INTERVAL = 1  # Poll every second
+REQUIRED_SESSION_COOKIES = ["auth_token", "ct0"]
 
 
 def get_future_date(days=7, hours=0, minutes=0, seconds=0):
@@ -878,7 +881,7 @@ def extract_email_from_password(password):
     return base_email
 
 
-def extract_cookies(driver):
+def extract_cookies(driver, log_cookie_names=True):
     """Extract cookies from the browser."""
     logger.info("Extracting cookies")
     browser_cookies = driver.get_cookies()
@@ -895,16 +898,47 @@ def extract_cookies(driver):
         value = value.replace('"', "")  # Replace any remaining quotes
 
         cookie_values[cookie["name"]] = value
-        logger.info(f"Found cookie: {cookie['name']}")
+        if log_cookie_names:
+            logger.info(f"Found cookie: {cookie['name']}")
 
-    # Log missing known cookies (just for information)
-    missing_cookies = [name for name in COOKIE_NAMES if name not in cookie_values]
+    # Log missing required cookies (critical for scraper auth).
+    missing_cookies = [
+        name for name in REQUIRED_SESSION_COOKIES if name not in cookie_values
+    ]
     if missing_cookies:
-        logger.warning(f"Missing expected cookies: {', '.join(missing_cookies)}")
+        logger.warning(f"Missing required cookies: {', '.join(missing_cookies)}")
     else:
-        logger.info("All expected cookies found")
+        logger.info("All required cookies found")
 
     return cookie_values, used_domain
+
+
+def wait_for_required_session_cookies(driver, timeout_seconds=POST_LOGIN_COOKIE_WAIT):
+    """Wait for required session cookies to appear after login."""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        cookie_values, _ = extract_cookies(driver, log_cookie_names=False)
+        missing_required = [
+            name
+            for name in REQUIRED_SESSION_COOKIES
+            if not cookie_values.get(name)
+        ]
+        if not missing_required:
+            logger.info(
+                f"Required session cookies are present: {', '.join(REQUIRED_SESSION_COOKIES)}"
+            )
+            return cookie_values
+
+        logger.info(
+            f"Waiting for required session cookies: {', '.join(missing_required)}"
+        )
+        time.sleep(POST_LOGIN_COOKIE_POLL_INTERVAL)
+
+    logger.warning(
+        f"Timed out waiting for required session cookies: {', '.join(REQUIRED_SESSION_COOKIES)}"
+    )
+    cookie_values, _ = extract_cookies(driver)
+    return cookie_values
 
 
 def generate_cookies_json(cookie_values, domain="x.com"):
@@ -942,15 +976,6 @@ def generate_cookies_json(cookie_values, domain="x.com"):
 
         cookies.append(create_cookie_template(name, value, domain, expires))
     
-    # Ensure critical cookies exist in the list even if missing (with empty values)
-    # This maintains compatibility with previous behavior for COOKIE_NAMES
-    found_names = set(cookie_values.keys())
-    for name in COOKIE_NAMES:
-        if name not in found_names:
-            logger.warning(f"Adding empty placeholder for missing expected cookie: {name}")
-            # Use 1 week default for missing cookies
-            cookies.append(create_cookie_template(name, "", domain, one_week_future))
-
     return cookies
 
 
@@ -1217,14 +1242,16 @@ def process_account_state_machine(driver, username, password):
             logger.info("Login detected, waiting briefly for cookies to be set...")
             time.sleep(2)
             
-            # We don't need to navigate to home - cookies are already set after login
-            # Just make sure we're on an x.com page (not a redirect or error)
+            # Ensure we are on a stable post-login page before cookie extraction.
             current = driver.current_url.lower()
-            if "x.com" not in current and "twitter.com" not in current:
-                logger.info("Not on X/Twitter domain, navigating to ensure cookies are accessible")
+            if (
+                "x.com/i/flow/login" in current
+                or ("x.com" not in current and "twitter.com" not in current)
+            ):
+                logger.info("Navigating to https://x.com/home to stabilize authenticated session")
                 try:
                     driver.get("https://x.com/home")
-                    time.sleep(3)  # Brief wait, don't need full page load
+                    time.sleep(3)  # Brief wait for cookie-setting redirects/scripts
                 except WebDriverException as e:
                     if (
                         "no such window" in str(e).lower()
@@ -1238,8 +1265,9 @@ def process_account_state_machine(driver, username, password):
             else:
                 logger.info(f"On X/Twitter domain, extracting cookies from: {current}")
 
-            # Extract and save cookies
-            cookie_values, domain = extract_cookies(driver)
+            # Poll for required post-login session cookies before final extraction.
+            cookie_values = wait_for_required_session_cookies(driver)
+            domain = "x.com"
             cookies_json = generate_cookies_json(cookie_values, domain)
 
             # Save cookies to file
