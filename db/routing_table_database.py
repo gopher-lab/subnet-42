@@ -68,6 +68,128 @@ class RoutingTableDatabase:
             )
             conn.commit()
 
+    def add_or_refresh_address_keep_newest(self, hotkey, uid, address, worker_id=None):
+        """
+        Atomically:
+        - resolves orphaned address conflicts (same address, different hotkey)
+        - inserts or refreshes the (hotkey, uid, address, worker_id) row
+        - prunes all other addresses for this hotkey (keeps newest)
+
+        This enforces the invariant: at most one miner_addresses row per hotkey.
+
+        Returns (action, pruned_count) where action is one of:
+          - "inserted"
+          - "refreshed" (timestamp updated for identical row)
+          - "skipped_conflict" (address belongs to another active hotkey)
+        """
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
+            cursor = conn.cursor()
+
+            # 1) Resolve "address is already registered" conflicts.
+            cursor.execute(
+                "SELECT hotkey FROM miner_addresses WHERE address = ?",
+                (address,),
+            )
+            existing = cursor.fetchone()
+            if existing and existing[0] != hotkey:
+                old_hotkey = existing[0]
+                cursor.execute(
+                    "SELECT COUNT(*) FROM miner_addresses WHERE hotkey = ?",
+                    (old_hotkey,),
+                )
+                count = cursor.fetchone()[0]
+                if count == 1:
+                    # Likely orphaned from a deregistered miner; delete to allow reuse.
+                    cursor.execute(
+                        "DELETE FROM miner_addresses WHERE address = ?",
+                        (address,),
+                    )
+                else:
+                    # Active hotkey has multiple entries; do not steal the address.
+                    conn.commit()
+                    return "skipped_conflict", 0
+
+            # 2) Check current rows for this hotkey.
+            cursor.execute(
+                """
+                SELECT rowid, uid, address, worker_id
+                FROM miner_addresses
+                WHERE hotkey = ?
+                """,
+                (hotkey,),
+            )
+            rows = cursor.fetchall()
+
+            # Identical row exists -> refresh timestamp and then prune to newest.
+            for rowid, existing_uid, existing_address, existing_worker_id in rows:
+                if (
+                    existing_uid == uid
+                    and existing_address == address
+                    and existing_worker_id == worker_id
+                ):
+                    cursor.execute(
+                        """
+                        UPDATE miner_addresses
+                        SET timestamp = CURRENT_TIMESTAMP
+                        WHERE rowid = ?
+                        """,
+                        (rowid,),
+                    )
+                    pruned = self._prune_hotkey_keep_newest_with_cursor(cursor, hotkey)
+                    conn.commit()
+                    return "refreshed", pruned
+
+            # If same hotkey+uid exists but points elsewhere, delete it (uid churn update).
+            cursor.execute(
+                """
+                DELETE FROM miner_addresses
+                WHERE hotkey = ? AND uid = ? AND address <> ?
+                """,
+                (hotkey, uid, address),
+            )
+
+            # 3) Insert the new row.
+            cursor.execute(
+                """
+                INSERT INTO miner_addresses (hotkey, uid, address, worker_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                (hotkey, uid, address, worker_id),
+            )
+
+            # 4) Prune: keep only newest row for this hotkey.
+            pruned = self._prune_hotkey_keep_newest_with_cursor(cursor, hotkey)
+            conn.commit()
+            return "inserted", pruned
+
+    def _prune_hotkey_keep_newest_with_cursor(self, cursor, hotkey):
+        """
+        Keep only the newest row for a hotkey, using an existing cursor/txn.
+        Returns deleted row count.
+        """
+        cursor.execute(
+            """
+            SELECT rowid
+            FROM miner_addresses
+            WHERE hotkey = ?
+            ORDER BY datetime(timestamp) DESC, rowid DESC
+            LIMIT 1
+            """,
+            (hotkey,),
+        )
+        keep = cursor.fetchone()
+        if not keep:
+            return 0
+        keep_rowid = keep[0]
+        cursor.execute(
+            """
+            DELETE FROM miner_addresses
+            WHERE hotkey = ? AND rowid <> ?
+            """,
+            (hotkey, keep_rowid),
+        )
+        return cursor.rowcount
+
     def update_address(self, hotkey, uid, new_address, worker_id=None):
         with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
@@ -129,29 +251,7 @@ class RoutingTableDatabase:
         """
         with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT rowid
-                FROM miner_addresses
-                WHERE hotkey = ?
-                ORDER BY datetime(timestamp) DESC, rowid DESC
-                LIMIT 1
-                """,
-                (hotkey,),
-            )
-            keep = cursor.fetchone()
-            if not keep:
-                return 0
-
-            keep_rowid = keep[0]
-            cursor.execute(
-                """
-                DELETE FROM miner_addresses
-                WHERE hotkey = ? AND rowid <> ?
-                """,
-                (hotkey, keep_rowid),
-            )
-            deleted = cursor.rowcount
+            deleted = self._prune_hotkey_keep_newest_with_cursor(cursor, hotkey)
             conn.commit()
             return deleted
 
@@ -175,28 +275,7 @@ class RoutingTableDatabase:
 
             deleted_total = 0
             for hotkey in hotkeys:
-                cursor.execute(
-                    """
-                    SELECT rowid
-                    FROM miner_addresses
-                    WHERE hotkey = ?
-                    ORDER BY datetime(timestamp) DESC, rowid DESC
-                    LIMIT 1
-                    """,
-                    (hotkey,),
-                )
-                keep = cursor.fetchone()
-                if not keep:
-                    continue
-                keep_rowid = keep[0]
-                cursor.execute(
-                    """
-                    DELETE FROM miner_addresses
-                    WHERE hotkey = ? AND rowid <> ?
-                    """,
-                    (hotkey, keep_rowid),
-                )
-                deleted_total += cursor.rowcount
+                deleted_total += self._prune_hotkey_keep_newest_with_cursor(cursor, hotkey)
 
             conn.commit()
             return deleted_total
