@@ -8,6 +8,7 @@ class TelemetryDatabase:
         self.lock = Lock()
         self._create_table()
         self._ensure_required_columns()
+        self._ensure_indexes()
 
     def _create_table(self):
         with self.lock, sqlite3.connect(self.db_path) as conn:
@@ -45,6 +46,24 @@ class TelemetryDatabase:
 
             # Legacy columns removed: telemetry now uses JSON stats exclusively
 
+            conn.commit()
+
+    def _ensure_indexes(self):
+        """
+        Ensure indexes exist for common access patterns.
+
+        This keeps operations like `DELETE ... WHERE hotkey = ?` and
+        `SELECT ... WHERE hotkey = ? ORDER BY timestamp DESC` bounded as the
+        telemetry table grows.
+        """
+        with self.lock, sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_telemetry_hotkey_timestamp
+                ON telemetry (hotkey, timestamp)
+                """
+            )
             conn.commit()
 
     def add_telemetry(self, telemetry_data):
