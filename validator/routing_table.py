@@ -15,9 +15,10 @@ logger = get_logger(__name__)
 
 try:
     import aiohttp  # type: ignore
+    from aiohttp import ClientError as AiohttpClientError  # type: ignore
 except ImportError:  # pragma: no cover
     aiohttp = None
-
+    AiohttpClientError = Exception  # type: ignore
 
 class RoutingTable:
     def __init__(self, db_path="miner_tee_addresses.db"):
@@ -426,7 +427,7 @@ class RoutingTable:
 
                         return False
 
-        except aiohttp.ClientError as e:
+        except AiohttpClientError as e:
             error_msg = f"API connection error: {str(e)}"
             logger.error(error_msg)
 

@@ -280,7 +280,6 @@ class RoutingTableDatabase:
             conn.commit()
             return deleted_total
 
-
     def clean_old_entries(self):
         """
         Remove all entries where the timestamp is more than one hour older.
