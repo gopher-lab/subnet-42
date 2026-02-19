@@ -12,6 +12,7 @@ from validator.telemetry import TEETelemetryClient
 from validator.errors_storage import ErrorsStorage
 import asyncio
 from datetime import datetime
+import weakref
 
 if TYPE_CHECKING:
     from neurons.validator import Validator
@@ -31,7 +32,10 @@ class NodeManager:
         self.errors_storage = ErrorsStorage()
         # Prevent concurrent registrations for the same hotkey from interleaving
         # read/update/read + telemetry wipe logic.
-        self._tee_registration_locks: Dict[str, asyncio.Lock] = {}
+        # Use weak values so locks for churned hotkeys don't accumulate forever.
+        self._tee_registration_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+            weakref.WeakValueDictionary()
+        )
 
         # Schedule error logs cleanup based on retention period
         cleanup_task = asyncio.create_task(self.run_periodic_error_cleanup())
