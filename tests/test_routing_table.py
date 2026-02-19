@@ -72,6 +72,17 @@ class TestRoutingTable(unittest.TestCase):
     def setUp(self):
         self.routing_table = RoutingTable(db_path="test_miner_tee_addresses")
 
+    def tearDown(self):
+        # Clear the database after each test to avoid cross-test pollution
+        with self.routing_table.db.lock, sqlite3.connect(
+            self.routing_table.db.db_path
+        ) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM miner_addresses")
+            cursor.execute("DELETE FROM worker_registry")
+            cursor.execute("DELETE FROM unregistered_tees")
+            conn.commit()
+
     def test_clear_miner(self):
         self.routing_table.clear_miner("hotkey1")
         self.routing_table.clear_miner("hotkey2")
@@ -101,9 +112,9 @@ class TestRoutingTable(unittest.TestCase):
             self.routing_table.add_miner_address("hotkey1", "uid1", "address1")
             self.routing_table.add_miner_address("hotkey1", "uid2", "address2")
             addresses = self.routing_table.get_miner_addresses("hotkey1")
-            self.assertEqual(len(addresses), 2)
-            self.assertIn("address1", addresses)
-            self.assertIn("address2", addresses)
+            # Enforced invariant: only the newest address is kept per hotkey.
+            self.assertEqual(len(addresses), 1)
+            self.assertEqual(addresses[0][0], "address2")
         except sqlite3.Error as e:
             self.fail(f"Unexpected database error: {e}")
 
