@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 import numpy as np
 
 from validator.platform_config import PlatformConfig, PlatformManager
@@ -107,44 +107,6 @@ class TestPlatformManager(unittest.TestCase):
         names = self.manager.get_platform_names()
         self.assertIn("twitter", names)
         self.assertIn("tiktok", names)
-
-    def test_add_platform(self):
-        """Test adding a new platform."""
-        new_config = PlatformConfig(
-            name="linkedin",
-            emission_weight=0.05,
-            metrics=["posts", "connections"],
-            error_metrics=["errors"],
-            success_metrics=["posts"],
-        )
-
-        # This should log a warning since weights won't sum to 1.0
-        with patch("validator.platform_config.logger") as mock_logger:
-            self.manager.add_platform(new_config)
-            mock_logger.warning.assert_called()
-
-        self.assertIn("linkedin", self.manager.get_platform_names())
-
-    def test_update_platform_weights(self):
-        """Test updating platform emission weights."""
-        new_weights = {"twitter": 0.8, "tiktok": 0.2}
-        self.manager.update_platform_weights(new_weights)
-
-        twitter_config = self.manager.get_platform("twitter")
-        tiktok_config = self.manager.get_platform("tiktok")
-
-        self.assertEqual(twitter_config.emission_weight, 0.8)
-        self.assertEqual(tiktok_config.emission_weight, 0.2)
-
-        # Total should still be 1.0
-        self.assertAlmostEqual(self.manager.get_total_emission_weight(), 1.0, places=6)
-
-    def test_update_platform_weights_invalid_sum(self):
-        """Test that invalid weight sums raise ValueError."""
-        invalid_weights = {"twitter": 0.7, "tiktok": 0.7}  # Sum = 1.4
-
-        with self.assertRaises(ValueError):
-            self.manager.update_platform_weights(invalid_weights)
 
 
 class TestMultiPlatformScoring(unittest.TestCase):

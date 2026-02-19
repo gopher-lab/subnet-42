@@ -56,18 +56,6 @@ class RoutingTableDatabase:
             )
             conn.commit()
 
-    def add_address(self, hotkey, uid, address, worker_id=None):
-        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO miner_addresses (hotkey, uid, address, worker_id) 
-                VALUES (?, ?, ?, ?)
-                """,
-                (hotkey, uid, address, worker_id),
-            )
-            conn.commit()
-
     def add_or_refresh_address_keep_newest(self, hotkey, uid, address, worker_id=None):
         """
         Atomically:
@@ -190,71 +178,6 @@ class RoutingTableDatabase:
         )
         return cursor.rowcount
 
-    def update_address(self, hotkey, uid, new_address, worker_id=None):
-        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
-            cursor = conn.cursor()
-            if worker_id is not None:
-                cursor.execute(
-                    """
-                    UPDATE miner_addresses SET address = ?, worker_id = ? 
-                    WHERE hotkey = ? AND uid = ?
-                    """,
-                    (new_address, worker_id, hotkey, uid),
-                )
-            else:
-                cursor.execute(
-                    """
-                    UPDATE miner_addresses SET address = ? 
-                    WHERE hotkey = ? AND uid = ?
-                    """,
-                    (new_address, hotkey, uid),
-                )
-            conn.commit()
-
-    def update_timestamp(self, hotkey, uid, address, worker_id=None):
-        """
-        Update the timestamp for an existing miner address record to current time.
-        """
-        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE miner_addresses 
-                SET timestamp = CURRENT_TIMESTAMP 
-                WHERE hotkey = ? AND uid = ? AND address = ? 
-                AND worker_id = ?
-                """,
-                (hotkey, uid, address, worker_id),
-            )
-            conn.commit()
-            # Return True if a row was updated
-            return cursor.rowcount > 0
-
-    def delete_address(self, hotkey, uid):
-        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                DELETE FROM miner_addresses 
-                WHERE hotkey = ? AND uid = ?
-                """,
-                (hotkey, uid),
-            )
-            conn.commit()
-
-    def prune_hotkey_addresses_keep_newest(self, hotkey):
-        """
-        Enforce "at most one address per hotkey" by keeping only the newest row
-        (by timestamp, then rowid) and deleting all older rows for that hotkey.
-
-        Returns the number of deleted rows.
-        """
-        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
-            cursor = conn.cursor()
-            deleted = self._prune_hotkey_keep_newest_with_cursor(cursor, hotkey)
-            conn.commit()
-            return deleted
-
     def prune_all_hotkeys_keep_newest(self):
         """
         Enforce "at most one address per hotkey" across the whole table.
@@ -279,35 +202,6 @@ class RoutingTableDatabase:
 
             conn.commit()
             return deleted_total
-
-    def clean_old_entries(self):
-        """
-        Remove all entries where the timestamp is more than one hour older.
-        """
-        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                DELETE FROM miner_addresses 
-                WHERE timestamp < datetime('now', '-1 hour')
-                """
-            )
-            conn.commit()
-
-    def clean_old_entries_conservative(self):
-        """
-        Remove entries where the timestamp is more than 6 hours older.
-        More conservative cleanup for very old entries only.
-        """
-        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                DELETE FROM miner_addresses 
-                WHERE timestamp < datetime('now', '-6 hours')
-                """
-            )
-            conn.commit()
 
     def remove_miner_address_by_address(self, address):
         """
@@ -423,37 +317,6 @@ class RoutingTableDatabase:
             random.shuffle(worker_list)
             return worker_list
 
-    def clean_old_worker_registrations(self, hours=24):
-        """
-        Remove worker registrations older than the specified number of hours.
-        """
-        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                DELETE FROM worker_registry 
-                WHERE timestamp < datetime('now', ?)
-                """,
-                (f"-{hours} hours",),
-            )
-            conn.commit()
-
-    def add_unregistered_tee(self, address, hotkey):
-        """
-        Add a new unregistered TEE to the database.
-        If the address already exists, it will update the hotkey.
-        """
-        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO unregistered_tees (address, hotkey) 
-                VALUES (?, ?)
-                """,
-                (address, hotkey),
-            )
-            conn.commit()
-
     def clean_old_unregistered_tees(self):
         """
         Remove all unregistered TEEs where the timestamp is more than one hour old.
@@ -468,20 +331,6 @@ class RoutingTableDatabase:
             )
             conn.commit()
 
-    def get_all_unregistered_tees(self):
-        """
-        Get all unregistered TEEs from the database.
-        """
-        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT address, hotkey FROM unregistered_tees
-                """
-            )
-            results = cursor.fetchall()
-            return [(address, hotkey) for address, hotkey in results]
-
     def get_all_unregistered_tee_addresses(self):
         """
         Get all addresses from the unregistered_tees table.
@@ -495,27 +344,6 @@ class RoutingTableDatabase:
             )
             results = cursor.fetchall()
             return [address[0] for address in results]
-
-    def get_miner_addresses_by_hotkey(self, hotkey):
-        """
-        Get all miner addresses associated with a hotkey.
-
-        :param hotkey: The hotkey to search for
-        :return: A list of (uid, address, worker_id) tuples for the specified
-                 hotkey
-        """
-        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT uid, address, worker_id 
-                FROM miner_addresses 
-                WHERE hotkey = ?
-                """,
-                (hotkey,),
-            )
-            results = cursor.fetchall()
-            return [(row[0], row[1], row[2]) for row in results]
 
     def get_address_timestamp(self, address):
         """

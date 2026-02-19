@@ -69,20 +69,6 @@ class RoutingTable:
             else:
                 logger.error(f"Failed to add address: {e}")
 
-    def update_timestamp(self, hotkey, uid, address, worker_id=None):
-        """Update the timestamp for an existing miner address to current time."""
-        try:
-            success = self.db.update_timestamp(hotkey, uid, address, worker_id)
-            if success:
-                logger.debug(f"Updated timestamp for {hotkey} - {address}")
-            else:
-                logger.debug(
-                    f"No matching entry found to update timestamp for "
-                    f"{hotkey} - {address}"
-                )
-        except sqlite3.Error as e:
-            logger.error(f"Failed to update timestamp: {e}")
-
     def get_address_timestamp(self, address):
         """Get the timestamp of a specific address."""
         try:
@@ -90,13 +76,6 @@ class RoutingTable:
         except sqlite3.Error as e:
             logger.error(f"Failed to get timestamp for address {address}: {e}")
             return None
-
-    def remove_miner_address(self, hotkey, uid):
-        """Remove a specific miner address from the database."""
-        try:
-            self.db.delete_address(hotkey, uid)
-        except sqlite3.Error as e:
-            logger.error(f"Failed to remove address: {e}")
 
     def clear_miner(self, hotkey):
         """Remove all addresses and worker registrations for a miner."""
@@ -232,27 +211,6 @@ class RoutingTable:
         except sqlite3.Error as e:
             logger.error(f"Failed to get all worker registrations: {e}")
             return []
-
-    def clean_old_worker_registrations(self, hours=24):
-        """Clean worker registrations older than the specified hours."""
-        try:
-            self.db.clean_old_worker_registrations(hours)
-        except sqlite3.Error as e:
-            logger.error(f"Failed to clean old worker registrations: {e}")
-
-    def clean_old_entries(self):
-        """Clean all old entries from both tables."""
-        try:
-            self.db.clean_old_entries()
-        except sqlite3.Error as e:
-            logger.error(f"Failed to clean old entries: {e}")
-
-    def clean_old_entries_conservative(self):
-        """Clean very old entries (6+ hours) from both tables."""
-        try:
-            self.db.clean_old_entries_conservative()
-        except sqlite3.Error as e:
-            logger.error(f"Failed to clean old entries conservatively: {e}")
 
     def remove_miner_address_by_address(self, address):
         """Remove a miner address by address only."""
@@ -480,14 +438,6 @@ class RoutingTable:
             self.db.clean_old_unregistered_tees()
         except sqlite3.Error as e:
             logger.error(f"Failed to clean old unregistered TEEs: {e}")
-
-    def get_all_unregistered_tees(self):
-        """Get all unregistered TEEs from the database."""
-        try:
-            return self.db.get_all_unregistered_tees()
-        except sqlite3.Error as e:
-            logger.error(f"Failed to get all unregistered TEEs: {e}")
-            return []
 
     def get_all_unregistered_tee_addresses(self):
         """Get all addresses from unregistered TEEs."""

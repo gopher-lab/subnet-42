@@ -1,6 +1,5 @@
 # from typing import Optional, List
 from typing import Dict
-from cryptography.fernet import Fernet
 from dataclasses import dataclass, asdict
 
 
@@ -8,14 +7,6 @@ from dataclasses import dataclass, asdict
 class JSONSerializable:
     def to_dict(self):
         return asdict(self)
-
-
-@dataclass
-class ConnectedNode(JSONSerializable):
-    address: str
-    symmetric_key: str
-    symmetric_key_uuid: str
-    fernet: Fernet
 
 
 @dataclass
@@ -50,25 +41,11 @@ class NodeData(JSONSerializable):
         """Get a stat value by name from the dynamic stats_json."""
         return self.stats_json.get(stat_name, default)
 
-    def set_stat_value(self, stat_name: str, value: int):
-        """Set a stat value by name in the dynamic stats_json."""
-        if self.stats_json is None:
-            self.stats_json = {}
-        self.stats_json[stat_name] = value
-
     def get_platform_metric(self, platform: str, metric: str, default: int = 0) -> int:
         """Get a platform-specific metric value."""
         if not self.platform_metrics:
             return default
         return self.platform_metrics.get(platform, {}).get(metric, default)
-
-    def set_platform_metric(self, platform: str, metric: str, value: int):
-        """Set a platform-specific metric value."""
-        if self.platform_metrics is None:
-            self.platform_metrics = {}
-        if platform not in self.platform_metrics:
-            self.platform_metrics[platform] = {}
-        self.platform_metrics[platform][metric] = value
 
     def populate_legacy_fields(self):
         """

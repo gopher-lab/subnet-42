@@ -18,28 +18,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def apply_kurtosis(x):
-    if len(x) == 0 or np.all(x == 0):
-        return np.zeros_like(x)
-
-    # Center and scale the data
-    x_centered = (x - np.mean(x)) / (np.std(x) + 1e-8)
-
-    # Apply sigmoid with steeper curve for outliers
-    k = 2.0  # Controls steepness of curve
-    beta = 0.5  # Controls center point sensitivity
-
-    # Custom kurtosis-like function that rewards high performers
-    # but has diminishing returns
-    y = 1 / (1 + np.exp(-k * (x_centered - beta)))
-    y += 0.2 * np.tanh(x_centered)  # Add small boost for very high performers
-
-    # Normalize to [0,1] range
-    y = (y - np.min(y)) / (np.max(y) - np.min(y) + 1e-8)
-
-    return y
-
-
 def apply_kurtosis_custom(
     x,
     top_percentile=90,
