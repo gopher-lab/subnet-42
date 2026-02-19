@@ -590,8 +590,33 @@ class NodeManager:
         verified_entries,
     ):
         """Register a TEE address and send notifications."""
+        # If the miner rotates TEEs (new address for same hotkey), their stats counters
+        # can "jump" upward and look like new work in delta calculation. To prevent
+        # this amplification vector, reset the validator's stored telemetry baseline
+        # whenever the active routing-table address changes.
+        previous_addresses = routing_table.get_miner_addresses(hotkey=hotkey) or []
+        previous_address = previous_addresses[0][0] if previous_addresses else None
+
         routing_table.register_worker(hotkey=hotkey, worker_id=worker_id)
         routing_table.add_miner_address(hotkey, node.node_id, tee_address, worker_id)
+
+        if previous_address is not None and previous_address != tee_address:
+            try:
+                deleted = self.validator.telemetry_storage.delete_telemetry_by_hotkey(
+                    hotkey
+                )
+                logger.warning(
+                    f"Hotkey {hotkey} rotated TEE address {previous_address} -> {tee_address}; "
+                    f"deleted {deleted} telemetry rows to reset baseline"
+                )
+            except Exception as e:
+                # Non-fatal: the routing table update is still correct, and the next
+                # telemetry loop can still proceed. This just leaves a potential
+                # scoring jump until telemetry expires naturally.
+                logger.error(
+                    f"Failed to delete telemetry for hotkey {hotkey} after TEE rotation: {e}",
+                    exc_info=True,
+                )
 
         logger.debug(f"Added TEE address {tee_address} for hotkey {hotkey}")
 
