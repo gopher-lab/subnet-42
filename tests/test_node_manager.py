@@ -305,5 +305,44 @@ class TestNodeManager(unittest.IsolatedAsyncioTestCase):
             hotkey
         )
 
+    async def test_register_tee_address_telemetry_wipe_failure_logs_and_continues(self):
+        hotkey = "hk5"
+        new_address = "tee://new-failure"
+
+        routing_table = MagicMock()
+        routing_table.get_miner_addresses.side_effect = [
+            [],
+            [(new_address, "w1")],
+        ]
+        routing_table.register_worker = MagicMock()
+        routing_table.add_miner_address = MagicMock()
+
+        self.mock_validator.telemetry_storage.delete_telemetry_by_hotkey = MagicMock(
+            side_effect=RuntimeError("telemetry deletion failed")
+        )
+
+        async def direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("validator.node_manager.asyncio.to_thread", new=AsyncMock(side_effect=direct)):
+            verified = set()
+            with self.assertLogs("validator.node_manager", level="ERROR") as cm:
+                await self.node_manager._register_tee_address(
+                    routing_table=routing_table,
+                    hotkey=hotkey,
+                    node=self.mock_node,
+                    tee_address=new_address,
+                    worker_id="worker-1",
+                    worker_hotkey="existing-hotkey",
+                    verified_entries=verified,
+                )
+
+        routing_table.add_miner_address.assert_called_once()
+        self.assertIn((hotkey, new_address), verified)
+        self.assertTrue(
+            any("Failed to delete telemetry for hotkey" in msg for msg in cm.output),
+            msg="Expected telemetry deletion failure to be logged as an error.",
+        )
+
 if __name__ == "__main__":
     unittest.main()
