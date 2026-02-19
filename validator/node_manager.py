@@ -12,6 +12,7 @@ from validator.telemetry import TEETelemetryClient
 from validator.errors_storage import ErrorsStorage
 import asyncio
 from datetime import datetime
+import weakref
 
 if TYPE_CHECKING:
     from neurons.validator import Validator
@@ -29,12 +30,26 @@ class NodeManager:
         self.validator = validator
         self.connected_nodes: Dict[str, Node] = {}
         self.errors_storage = ErrorsStorage()
+        # Prevent concurrent registrations for the same hotkey from interleaving
+        # read/update/read + telemetry wipe logic.
+        # Use weak values so locks for churned hotkeys don't accumulate forever.
+        self._tee_registration_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+            weakref.WeakValueDictionary()
+        )
 
         # Schedule error logs cleanup based on retention period
         cleanup_task = asyncio.create_task(self.run_periodic_error_cleanup())
         # Register the task with validator for graceful shutdown
         if hasattr(validator, "add_background_task"):
             validator.add_background_task(cleanup_task)
+
+    def _get_tee_registration_lock(self, hotkey: str) -> asyncio.Lock:
+        # No await points here; safe to lazily create locks in a single-threaded loop.
+        lock = self._tee_registration_locks.get(hotkey)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._tee_registration_locks[hotkey] = lock
+        return lock
 
     async def run_periodic_error_cleanup(self):
         """Run periodic cleanup of error logs based on retention period."""
@@ -590,8 +605,54 @@ class NodeManager:
         verified_entries,
     ):
         """Register a TEE address and send notifications."""
-        routing_table.register_worker(hotkey=hotkey, worker_id=worker_id)
-        routing_table.add_miner_address(hotkey, node.node_id, tee_address, worker_id)
+        def _active_address_for_hotkey() -> Optional[str]:
+            addresses = routing_table.get_miner_addresses(hotkey=hotkey) or []
+            # RoutingTable enforces one row per hotkey; take the only/first row.
+            return addresses[0][0] if addresses else None
+
+        async with self._get_tee_registration_lock(hotkey):
+            # If the miner rotates TEEs (new address for same hotkey), their stats counters
+            # can "jump" upward and look like new work in delta calculation. To prevent
+            # this amplification vector, reset the validator's stored telemetry baseline
+            # whenever the *active routing-table address actually changes*.
+            previous_active_address = _active_address_for_hotkey()
+
+            routing_table.register_worker(hotkey=hotkey, worker_id=worker_id)
+            routing_table.add_miner_address(hotkey, node.node_id, tee_address, worker_id)
+
+            # `add_miner_address()` can be a no-op (e.g. address conflict); only wipe if
+            # the post-update active address is the one we just attempted to register.
+            new_active_address = _active_address_for_hotkey()
+            should_wipe_telemetry = (
+                new_active_address is not None
+                and new_active_address == tee_address
+                and new_active_address != previous_active_address
+            )
+
+            if should_wipe_telemetry:
+                try:
+                    deleted = await asyncio.to_thread(
+                        self.validator.telemetry_storage.delete_telemetry_by_hotkey,
+                        hotkey,
+                    )
+                    if previous_active_address is None:
+                        logger.info(
+                            f"Hotkey {hotkey} registered/re-registered TEE address {tee_address}; "
+                            f"deleted {deleted} telemetry rows to reset baseline"
+                        )
+                    else:
+                        logger.warning(
+                            f"Hotkey {hotkey} rotated TEE address {previous_active_address} -> {tee_address}; "
+                            f"deleted {deleted} telemetry rows to reset baseline"
+                        )
+                except Exception as e:
+                    # Non-fatal: the routing table update is still correct, and the next
+                    # telemetry loop can still proceed. This just leaves a potential
+                    # scoring jump until telemetry expires naturally.
+                    logger.error(
+                        f"Failed to delete telemetry for hotkey {hotkey} after TEE rotation: {e}",
+                        exc_info=True,
+                    )
 
         logger.debug(f"Added TEE address {tee_address} for hotkey {hotkey}")
 
