@@ -22,15 +22,10 @@ jobs:
       matrix:
         include:
           - dockerfile: Dockerfile
-            image: subnet-42
           - dockerfile: Dockerfile.vpn
-            image: vpn-service
           - dockerfile: Dockerfile.cookies.generator
-            image: cookies-generator
           - dockerfile: Dockerfile.cookies.updater.docker
-            image: cookies-updater-docker
           - dockerfile: Dockerfile.cookies.updater.kubernetes
-            image: cookies-updater-kubernetes
     steps:
       - name: Checkout
         uses: actions/checkout@v4
