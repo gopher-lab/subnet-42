@@ -156,9 +156,12 @@ class NodeDataScorer:
 
             expected_source = self.active_stat_name
             if expected_source is None:
-                # We treat missing active_stat_name as a hard error condition for
-                # scoring (fail-closed). Do not aggregate any per-source stats.
-                selected_sources = []
+                # If we don't know which indexer source to score, only aggregate
+                # when a single source is present (avoid multi-source amplification).
+                if len(stats_dict) == 1:
+                    selected_sources = [next(iter(stats_dict.keys()))]
+                else:
+                    selected_sources = []
             else:
                 selected_sources = [expected_source]
 
@@ -204,7 +207,7 @@ class NodeDataScorer:
         await self.fetch_active_stat_name()
         await self.fetch_active_worker_version()
         logger.info(
-            f"Using active stat name: {self.active_stat_name or 'None (counting all)'}"
+            f"Using active stat name: {self.active_stat_name or 'None (single-source only)'}"
         )
         logger.info(
             f"Using active worker version: "

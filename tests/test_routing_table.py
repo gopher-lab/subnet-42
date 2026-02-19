@@ -1,4 +1,6 @@
 import unittest
+import os
+import tempfile
 from db.routing_table_database import RoutingTableDatabase
 from validator.routing_table import RoutingTable
 import sqlite3
@@ -7,7 +9,10 @@ from contextlib import closing
 
 class TestRoutingTableDatabase(unittest.TestCase):
     def setUp(self):
-        self.db = RoutingTableDatabase(db_path="test_miner_tee_addresses.db")
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        db_path = os.path.join(self._tmpdir.name, "routing_table.db")
+        self.db = RoutingTableDatabase(db_path=db_path)
 
     def tearDown(self):
         # Clear the database after each test
@@ -175,7 +180,10 @@ class TestRoutingTableDatabase(unittest.TestCase):
 
 class TestRoutingTable(unittest.TestCase):
     def setUp(self):
-        self.routing_table = RoutingTable(db_path="test_miner_tee_addresses")
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        db_path = os.path.join(self._tmpdir.name, "routing_table.db")
+        self.routing_table = RoutingTable(db_path=db_path)
 
     def tearDown(self):
         # Clear the database after each test to avoid cross-test pollution
@@ -239,12 +247,10 @@ class TestRoutingTable(unittest.TestCase):
 
     def test_add_duplicate_address(self):
         self.routing_table.add_miner_address("hotkey1", "uid1", "address1")
-        # Attempt to add a duplicate address
-        try:
-            self.routing_table.add_miner_address("hotkey2", "uid2", "address1")
-        except sqlite3.IntegrityError:
-            # Expected error when adding duplicate address
-            pass
+        # Attempt to add a duplicate address under a different hotkey.
+        # With current logic, a 1-row "old hotkey" is treated as orphaned and
+        # the address may be reassigned.
+        self.routing_table.add_miner_address("hotkey2", "uid2", "address1")
 
         with (
             self.routing_table.db.lock,
@@ -252,11 +258,11 @@ class TestRoutingTable(unittest.TestCase):
         ):
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM miner_addresses WHERE address = ?",
+                "SELECT hotkey FROM miner_addresses WHERE address = ?",
                 ("address1",),
             )
-            result = cursor.fetchall()
-            self.assertEqual(len(result), 1)
+            rows = cursor.fetchall()
+            self.assertEqual(rows, [("hotkey2",)])
 
 
 if __name__ == "__main__":

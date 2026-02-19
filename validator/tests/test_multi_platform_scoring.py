@@ -79,14 +79,14 @@ class TestPlatformManager(unittest.TestCase):
         platforms = self.manager.get_all_platforms()
 
         self.assertIn("twitter", platforms)
-        self.assertIn("tiktok", platforms)
+        self.assertIn("tiktok-transcription", platforms)
 
         twitter_config = platforms["twitter"]
-        self.assertEqual(twitter_config.emission_weight, 0.9)
-        self.assertIn("returned_tweets", twitter_config.success_metrics)
+        self.assertEqual(twitter_config.emission_weight, 0.7)
+        self.assertIn("tweets", twitter_config.success_metrics)
 
-        tiktok_config = platforms["tiktok"]
-        self.assertEqual(tiktok_config.emission_weight, 0.1)
+        tiktok_config = platforms["tiktok-transcription"]
+        self.assertEqual(tiktok_config.emission_weight, 0.05)
         self.assertIn("transcriptions", tiktok_config.success_metrics)
 
     def test_emission_weights_sum_to_one(self):
@@ -106,7 +106,7 @@ class TestPlatformManager(unittest.TestCase):
         """Test getting list of platform names."""
         names = self.manager.get_platform_names()
         self.assertIn("twitter", names)
-        self.assertIn("tiktok", names)
+        self.assertIn("tiktok-transcription", names)
 
 
 class TestMultiPlatformScoring(unittest.TestCase):
@@ -121,7 +121,7 @@ class TestMultiPlatformScoring(unittest.TestCase):
         """Test that PlatformManager is initialized correctly."""
         self.assertIsInstance(self.weights_manager.platform_manager, PlatformManager)
         self.assertEqual(
-            len(self.weights_manager.platform_manager.get_platform_names()), 2
+            len(self.weights_manager.platform_manager.get_platform_names()), 7
         )
 
     def test_calculate_platform_score_no_metrics(self):
@@ -133,16 +133,9 @@ class TestMultiPlatformScoring(unittest.TestCase):
             boot_time=0,
             last_operation_time=0,
             current_time=0,
-            twitter_auth_errors=0,
-            twitter_errors=0,
-            twitter_ratelimit_errors=0,
-            twitter_returned_other=0,
-            twitter_returned_profiles=0,
-            twitter_returned_tweets=0,
-            twitter_scrapes=0,
-            web_errors=0,
-            web_success=0,
             timestamp=0,
+            stats_json={},
+            platform_metrics={},
         )
 
         score = self.weights_manager.calculate_platform_score(node, "twitter")
@@ -157,34 +150,24 @@ class TestMultiPlatformScoring(unittest.TestCase):
             boot_time=0,
             last_operation_time=1000,
             current_time=2000,
-            twitter_auth_errors=0,
-            twitter_errors=0,
-            twitter_ratelimit_errors=0,
-            twitter_returned_other=0,
-            twitter_returned_profiles=0,
-            twitter_returned_tweets=0,
-            twitter_scrapes=0,
-            web_errors=0,
-            web_success=0,
             timestamp=0,
+            stats_json={},
             platform_metrics={
                 "twitter": {
-                    "returned_tweets": 100,
-                    "returned_profiles": 50,
+                    "tweets": 100,
                     "errors": 2,
                     "auth_errors": 1,
                 },
-                "tiktok": {"transcriptions": 25, "errors": 0},
+                "tiktok-transcription": {"transcriptions": 25, "errors": 0},
             },
         )
 
-        # Add time span for error rate calculation
-        node.time_span_seconds = 3600  # 1 hour
-
         twitter_score = self.weights_manager.calculate_platform_score(node, "twitter")
-        tiktok_score = self.weights_manager.calculate_platform_score(node, "tiktok")
+        tiktok_score = self.weights_manager.calculate_platform_score(
+            node, "tiktok-transcription"
+        )
 
-        # Twitter should have a score based on tweets + profiles
+        # Twitter should have a score based on tweets.
         self.assertGreater(twitter_score, 0.0)
 
         # TikTok should have a score based on transcriptions
@@ -199,27 +182,16 @@ class TestMultiPlatformScoring(unittest.TestCase):
             boot_time=0,
             last_operation_time=1000,
             current_time=2000,
-            twitter_auth_errors=0,
-            twitter_errors=0,
-            twitter_ratelimit_errors=0,
-            twitter_returned_other=0,
-            twitter_returned_profiles=0,
-            twitter_returned_tweets=0,
-            twitter_scrapes=0,
-            web_errors=0,
-            web_success=0,
             timestamp=0,
+            stats_json={},
             platform_metrics={
                 "twitter": {
-                    "returned_tweets": 100,
+                    "tweets": 100,
                     "errors": 50,  # High error count
                     "auth_errors": 25,
                 }
             },
         )
-
-        # Short time span = high error rate
-        node.time_span_seconds = 3600  # 1 hour, 75 errors/hour > threshold
 
         score = self.weights_manager.calculate_platform_score(node, "twitter")
         # Score should reflect success metrics regardless of errors
@@ -234,16 +206,8 @@ class TestMultiPlatformScoring(unittest.TestCase):
             boot_time=0,
             last_operation_time=0,
             current_time=0,
-            twitter_auth_errors=0,
-            twitter_errors=0,
-            twitter_ratelimit_errors=0,
-            twitter_returned_other=0,
-            twitter_returned_profiles=0,
-            twitter_returned_tweets=0,
-            twitter_scrapes=0,
-            web_errors=0,
-            web_success=0,
             timestamp=0,
+            stats_json={},
             platform_metrics={"unknown": {"metric": 100}},
         )
 
