@@ -224,7 +224,15 @@ class NodeDataScorer:
     ) -> Dict[str, Any]:
         """
         Aggregate telemetry stats without source validation.
-        Store ALL stats dynamically and let validation happen during delta calculation.
+        Store stats dynamically and let validation happen during delta calculation.
+
+        Important: the tee-worker reports per-source counters under:
+          telemetry_result["stats"][source_worker_id][stat_name] = counter
+
+        For scoring, we only want to count the active indexer source
+        (self.active_stat_name) when it is known. If it's not known, we avoid
+        summing across multiple sources (which would allow amplification) and
+        only aggregate when there is exactly one source present.
         Returns the complete stats_json for dynamic storage.
         """
         worker_id = telemetry_result.get("worker_id", "unknown")
@@ -242,24 +250,38 @@ class NodeDataScorer:
                 if isinstance(value, (int, float)) and key != "worker_id":
                     aggregated_stats[key] = int(value)
         else:
-            # New format - aggregate ALL stats from ALL worker IDs (no validation)
-            logger.info(
-                f"Worker ({worker_id}): Aggregating all stats without validation"
-            )
-
-            for source_worker_id, worker_stats in stats_dict.items():
-                logger.info(
-                    f"Worker ({worker_id}): Processing stats from source {source_worker_id}"
-                )
-
-                # Aggregate ALL stats from this worker dynamically
-                for stat_name, value in worker_stats.items():
-                    if isinstance(value, (int, float)):
-                        current_value = aggregated_stats.get(stat_name, 0)
-                        aggregated_stats[stat_name] = current_value + int(value)
+            # New format - keep raw stats per-source, but only aggregate the
+            # expected source into top-level numeric fields used by scoring.
 
             # Store raw platform metrics for later validation during delta calculation
             aggregated_stats["platform_metrics"] = stats_dict
+
+            expected_source = self.active_stat_name
+            if expected_source is None:
+                # We treat missing active_stat_name as a hard error condition for
+                # scoring (fail-closed). Do not aggregate any per-source stats.
+                selected_sources = []
+            else:
+                selected_sources = [expected_source]
+
+            if not selected_sources:
+                logger.info(
+                    f"Worker ({worker_id}): No eligible telemetry source to aggregate "
+                    f"(expected_source={expected_source}, sources={list(stats_dict.keys())})"
+                )
+            else:
+                for source_worker_id in selected_sources:
+                    worker_stats = stats_dict.get(source_worker_id, {})
+                    if not isinstance(worker_stats, dict):
+                        continue
+                    logger.info(
+                        f"Worker ({worker_id}): Aggregating stats from source {source_worker_id}"
+                    )
+                    for stat_name, value in worker_stats.items():
+                        if isinstance(value, (int, float)):
+                            aggregated_stats[stat_name] = aggregated_stats.get(
+                                stat_name, 0
+                            ) + int(value)
 
         # Always store worker_version in stats_json for downstream filtering
         try:

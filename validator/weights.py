@@ -232,19 +232,21 @@ class WeightsManager:
 
         active_stat_name = getattr(self.validator.scorer, "active_stat_name", None)
         if active_stat_name is None:
-            return True
+            # We expect to always know which indexer source should be scored.
+            # If we don't, fail closed and do not score new-format telemetry.
+            return False
 
-        # Validate that stats come from the correct source worker
-        # In raw platform_metrics, the outer keys are worker IDs
-        for worker_id, worker_stats in platform_metrics.items():
-            if isinstance(worker_stats, dict):
-                # The worker_id (outer key) should match active_stat_name
-                if worker_id != active_stat_name:
-                    logger.debug(
-                        f"Invalid source worker {worker_id}, expected {active_stat_name}"
-                    )
-                    return False
-
+        # Tolerant mode: allow workers to report multiple sources, but require
+        # that the expected (active) source exists so scoring can be based on it.
+        # (Actual aggregation is handled upstream in scorer.)
+        if not isinstance(platform_metrics, dict):
+            return False
+        if active_stat_name not in platform_metrics:
+            logger.debug(
+                f"Missing expected source worker {active_stat_name} in telemetry sources "
+                f"{list(platform_metrics.keys())}"
+            )
+            return False
         return True
 
     def _get_delta_node_data(self, telemetry_data: List[NodeData]) -> List[NodeData]:

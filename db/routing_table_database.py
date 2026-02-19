@@ -1,6 +1,7 @@
 import sqlite3
 from threading import Lock
 import random
+from contextlib import closing
 
 
 class RoutingTableDatabase:
@@ -12,7 +13,7 @@ class RoutingTableDatabase:
         self._create_unregistered_tees_table()
 
     def _create_table(self):
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -28,7 +29,7 @@ class RoutingTableDatabase:
             conn.commit()
 
     def _create_worker_registry_table(self):
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -42,7 +43,7 @@ class RoutingTableDatabase:
             conn.commit()
 
     def _create_unregistered_tees_table(self):
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -56,7 +57,7 @@ class RoutingTableDatabase:
             conn.commit()
 
     def add_address(self, hotkey, uid, address, worker_id=None):
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -67,8 +68,130 @@ class RoutingTableDatabase:
             )
             conn.commit()
 
+    def add_or_refresh_address_keep_newest(self, hotkey, uid, address, worker_id=None):
+        """
+        Atomically:
+        - resolves orphaned address conflicts (same address, different hotkey)
+        - inserts or refreshes the (hotkey, uid, address, worker_id) row
+        - prunes all other addresses for this hotkey (keeps newest)
+
+        This enforces the invariant: at most one miner_addresses row per hotkey.
+
+        Returns (action, pruned_count) where action is one of:
+          - "inserted"
+          - "refreshed" (timestamp updated for identical row)
+          - "skipped_conflict" (address belongs to another active hotkey)
+        """
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
+            cursor = conn.cursor()
+
+            # 1) Resolve "address is already registered" conflicts.
+            cursor.execute(
+                "SELECT hotkey FROM miner_addresses WHERE address = ?",
+                (address,),
+            )
+            existing = cursor.fetchone()
+            if existing and existing[0] != hotkey:
+                old_hotkey = existing[0]
+                cursor.execute(
+                    "SELECT COUNT(*) FROM miner_addresses WHERE hotkey = ?",
+                    (old_hotkey,),
+                )
+                count = cursor.fetchone()[0]
+                if count == 1:
+                    # Likely orphaned from a deregistered miner; delete to allow reuse.
+                    cursor.execute(
+                        "DELETE FROM miner_addresses WHERE address = ?",
+                        (address,),
+                    )
+                else:
+                    # Active hotkey has multiple entries; do not steal the address.
+                    conn.commit()
+                    return "skipped_conflict", 0
+
+            # 2) Check current rows for this hotkey.
+            cursor.execute(
+                """
+                SELECT rowid, uid, address, worker_id
+                FROM miner_addresses
+                WHERE hotkey = ?
+                """,
+                (hotkey,),
+            )
+            rows = cursor.fetchall()
+
+            # Identical row exists -> refresh timestamp and then prune to newest.
+            for rowid, existing_uid, existing_address, existing_worker_id in rows:
+                if (
+                    existing_uid == uid
+                    and existing_address == address
+                    and existing_worker_id == worker_id
+                ):
+                    cursor.execute(
+                        """
+                        UPDATE miner_addresses
+                        SET timestamp = CURRENT_TIMESTAMP
+                        WHERE rowid = ?
+                        """,
+                        (rowid,),
+                    )
+                    pruned = self._prune_hotkey_keep_newest_with_cursor(cursor, hotkey)
+                    conn.commit()
+                    return "refreshed", pruned
+
+            # If same hotkey+uid exists but points elsewhere, delete it (uid churn update).
+            cursor.execute(
+                """
+                DELETE FROM miner_addresses
+                WHERE hotkey = ? AND uid = ? AND address <> ?
+                """,
+                (hotkey, uid, address),
+            )
+
+            # 3) Insert the new row.
+            cursor.execute(
+                """
+                INSERT INTO miner_addresses (hotkey, uid, address, worker_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                (hotkey, uid, address, worker_id),
+            )
+
+            # 4) Prune: keep only newest row for this hotkey.
+            pruned = self._prune_hotkey_keep_newest_with_cursor(cursor, hotkey)
+            conn.commit()
+            return "inserted", pruned
+
+    def _prune_hotkey_keep_newest_with_cursor(self, cursor, hotkey):
+        """
+        Keep only the newest row for a hotkey, using an existing cursor/txn.
+        Returns deleted row count.
+        """
+        cursor.execute(
+            """
+            SELECT rowid
+            FROM miner_addresses
+            WHERE hotkey = ?
+            ORDER BY datetime(timestamp) DESC, rowid DESC
+            LIMIT 1
+            """,
+            (hotkey,),
+        )
+        keep = cursor.fetchone()
+        if not keep:
+            return 0
+        keep_rowid = keep[0]
+        cursor.execute(
+            """
+            DELETE FROM miner_addresses
+            WHERE hotkey = ? AND rowid <> ?
+            """,
+            (hotkey, keep_rowid),
+        )
+        return cursor.rowcount
+
     def update_address(self, hotkey, uid, new_address, worker_id=None):
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             if worker_id is not None:
                 cursor.execute(
@@ -92,7 +215,7 @@ class RoutingTableDatabase:
         """
         Update the timestamp for an existing miner address record to current time.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -108,7 +231,7 @@ class RoutingTableDatabase:
             return cursor.rowcount > 0
 
     def delete_address(self, hotkey, uid):
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -119,11 +242,49 @@ class RoutingTableDatabase:
             )
             conn.commit()
 
+    def prune_hotkey_addresses_keep_newest(self, hotkey):
+        """
+        Enforce "at most one address per hotkey" by keeping only the newest row
+        (by timestamp, then rowid) and deleting all older rows for that hotkey.
+
+        Returns the number of deleted rows.
+        """
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
+            cursor = conn.cursor()
+            deleted = self._prune_hotkey_keep_newest_with_cursor(cursor, hotkey)
+            conn.commit()
+            return deleted
+
+    def prune_all_hotkeys_keep_newest(self):
+        """
+        Enforce "at most one address per hotkey" across the whole table.
+
+        Returns the total number of deleted rows.
+        """
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT hotkey
+                FROM miner_addresses
+                GROUP BY hotkey
+                HAVING COUNT(*) > 1
+                """
+            )
+            hotkeys = [row[0] for row in cursor.fetchall()]
+
+            deleted_total = 0
+            for hotkey in hotkeys:
+                deleted_total += self._prune_hotkey_keep_newest_with_cursor(cursor, hotkey)
+
+            conn.commit()
+            return deleted_total
+
     def clean_old_entries(self):
         """
         Remove all entries where the timestamp is more than one hour older.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -138,7 +299,7 @@ class RoutingTableDatabase:
         Remove entries where the timestamp is more than 6 hours older.
         More conservative cleanup for very old entries only.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -152,7 +313,7 @@ class RoutingTableDatabase:
         """
         Remove a miner address entry by address only.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -168,7 +329,7 @@ class RoutingTableDatabase:
         Register a worker_id with a hotkey in the worker registry.
         If the worker_id already exists, it will update the hotkey.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -183,7 +344,7 @@ class RoutingTableDatabase:
         """
         Remove a worker_id from the worker registry.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -198,7 +359,7 @@ class RoutingTableDatabase:
         """
         Remove all worker_ids associated with a hotkey from the registry.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -214,7 +375,7 @@ class RoutingTableDatabase:
         Get the hotkey associated with a worker_id from the registry.
         Returns None if the worker_id is not registered.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             # Ensure worker_id is treated as a string for comparison
             worker_id_str = str(worker_id)
@@ -233,7 +394,7 @@ class RoutingTableDatabase:
         """
         Get all worker_ids associated with a hotkey from the registry.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -249,7 +410,7 @@ class RoutingTableDatabase:
         """
         Get all worker_id and hotkey pairs from the registry.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -266,7 +427,7 @@ class RoutingTableDatabase:
         """
         Remove worker registrations older than the specified number of hours.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -282,7 +443,7 @@ class RoutingTableDatabase:
         Add a new unregistered TEE to the database.
         If the address already exists, it will update the hotkey.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -297,7 +458,7 @@ class RoutingTableDatabase:
         """
         Remove all unregistered TEEs where the timestamp is more than one hour old.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -311,7 +472,7 @@ class RoutingTableDatabase:
         """
         Get all unregistered TEEs from the database.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -325,7 +486,7 @@ class RoutingTableDatabase:
         """
         Get all addresses from the unregistered_tees table.
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -343,7 +504,7 @@ class RoutingTableDatabase:
         :return: A list of (uid, address, worker_id) tuples for the specified
                  hotkey
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -363,7 +524,7 @@ class RoutingTableDatabase:
         :param address: The address to check
         :return: The timestamp string or None if not found
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -381,7 +542,7 @@ class RoutingTableDatabase:
         :param address: The address of the unregistered TEE to remove
         :return: True if an entry was removed, False if not found
         """
-        with self.lock, sqlite3.connect(self.db_path) as conn:
+        with self.lock, closing(sqlite3.connect(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """

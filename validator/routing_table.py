@@ -1,17 +1,39 @@
 import os
-import aiohttp
 import random
+import logging
+from contextlib import closing
 
 from db.routing_table_database import RoutingTableDatabase
 import sqlite3
-from fiber.logging_utils import get_logger
+try:
+    from fiber.logging_utils import get_logger  # type: ignore
+except ImportError:  # pragma: no cover
+    def get_logger(name):  # type: ignore
+        return logging.getLogger(name)
 
 logger = get_logger(__name__)
 
+try:
+    import aiohttp  # type: ignore
+    from aiohttp import ClientError as AiohttpClientError  # type: ignore
+except ImportError:  # pragma: no cover
+    aiohttp = None
+    AiohttpClientError = Exception  # type: ignore
 
 class RoutingTable:
     def __init__(self, db_path="miner_tee_addresses.db"):
         self.db = RoutingTableDatabase(db_path=db_path)
+        # Hard guardrail: a hotkey should map to a single "active" address.
+        # If historical rows exist (e.g., uid churn / duplicate registrations),
+        # keep only the newest entry per hotkey at startup.
+        try:
+            deleted = self.db.prune_all_hotkeys_keep_newest()
+            if deleted:
+                logger.warning(
+                    f"Pruned {deleted} old miner_addresses rows (kept newest per hotkey)"
+                )
+        except sqlite3.Error as e:
+            logger.error(f"Failed to prune duplicate hotkey addresses on startup: {e}")
 
     def add_miner_address(self, hotkey, uid, address, worker_id=None):
         """Add a new miner address to the database."""
@@ -21,73 +43,21 @@ class RoutingTable:
                 f"address={address}, worker_id={worker_id}"
             )
 
-            # Check if address exists with a different hotkey (orphaned entry)
-            try:
-                with self.db.lock, sqlite3.connect(self.db.db_path) as conn:
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "SELECT hotkey FROM miner_addresses WHERE address = ?",
-                        (address,),
-                    )
-                    existing = cursor.fetchone()
-                    if existing and existing[0] != hotkey:
-                        old_hotkey = existing[0]
-                        # Check if old hotkey has any other entries (if not, it's likely deregistered)
-                        # Query directly to avoid lock re-acquisition
-                        cursor.execute(
-                            "SELECT COUNT(*) FROM miner_addresses WHERE hotkey = ?",
-                            (old_hotkey,),
-                        )
-                        count = cursor.fetchone()[0]
-                        if (
-                            count == 1
-                        ):  # Only this entry exists (likely orphaned from deregistered miner)
-                            logger.warning(
-                                f"Address {address} exists for hotkey {old_hotkey} with only 1 entry. "
-                                f"Removing orphaned entry to allow registration for {hotkey}."
-                            )
-                            cursor.execute(
-                                "DELETE FROM miner_addresses WHERE address = ?",
-                                (address,),
-                            )
-                            conn.commit()
-                        else:
-                            logger.warning(
-                                f"Address {address} already exists for hotkey {old_hotkey} with {count} entries. "
-                                f"Cannot register for {hotkey} due to UNIQUE constraint."
-                            )
-            except sqlite3.Error as e:
-                logger.debug(f"Error checking for existing address: {e}")
-
-            # Check if there's already an entry with the exact same fields
-            existing_entries = self.db.get_miner_addresses_by_hotkey(hotkey)
-            for existing_uid, existing_address, existing_worker_id in existing_entries:
-                # Skip if identical entry already exists
-                if (
-                    existing_uid == uid
-                    and existing_address == address
-                    and existing_worker_id == worker_id
-                ):
-                    logger.debug(
-                        "Skipping add: Entry with identical fields already exists"
-                    )
-                    # Update timestamp to current time for the existing entry
-                    self.update_timestamp(hotkey, uid, address, worker_id)
-                    return
-
-                # If same hotkey and uid but different address or worker_id,
-                # remove old record
-                if existing_uid == uid and (
-                    existing_address != address or existing_worker_id != worker_id
-                ):
-                    logger.debug(
-                        "Removing old entry to update with new address or worker_id"
-                    )
-                    self.db.delete_address(hotkey, uid)
-                    break
-
-            # Add the new address
-            self.db.add_address(hotkey, uid, address, worker_id)
+            action, pruned = self.db.add_or_refresh_address_keep_newest(
+                hotkey=hotkey, uid=uid, address=address, worker_id=worker_id
+            )
+            if action == "skipped_conflict":
+                logger.warning(
+                    f"Address {address} is already registered in the system with a different hotkey. "
+                    f"Registration skipped for hotkey {hotkey}."
+                )
+                return
+            if pruned:
+                logger.warning(
+                    f"Pruned {pruned} old addresses for hotkey {hotkey} "
+                    f"(kept newest address={address})"
+                )
+            logger.debug(f"Routing table update action={action} for hotkey={hotkey}")
             logger.debug("Successfully added miner address to routing table")
         except sqlite3.Error as e:
             error_msg = str(e)
@@ -131,7 +101,7 @@ class RoutingTable:
     def clear_miner(self, hotkey):
         """Remove all addresses and worker registrations for a miner."""
         try:
-            with self.db.lock, sqlite3.connect(self.db.db_path) as conn:
+            with self.db.lock, closing(sqlite3.connect(self.db.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     """
@@ -151,7 +121,7 @@ class RoutingTable:
     def get_miner_addresses(self, hotkey):
         """Retrieve all addresses associated with a given miner hotkey."""
         try:
-            with self.db.lock, sqlite3.connect(self.db.db_path) as conn:
+            with self.db.lock, closing(sqlite3.connect(self.db.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     """
@@ -168,7 +138,7 @@ class RoutingTable:
     def get_all_addresses(self):
         """Get all unique addresses, randomized for fair distribution."""
         try:
-            with self.db.lock, sqlite3.connect(self.db.db_path) as conn:
+            with self.db.lock, closing(sqlite3.connect(self.db.db_path)) as conn:
                 cursor = conn.cursor()
                 # Get addresses without ORDER BY to avoid index interference
                 cursor.execute("SELECT address FROM miner_addresses")
@@ -184,7 +154,7 @@ class RoutingTable:
         """Get all addresses atomically with proper locking for NATS publishing."""
         with self.db.lock:
             try:
-                with sqlite3.connect(self.db.db_path) as conn:
+                with closing(sqlite3.connect(self.db.db_path)) as conn:
                     cursor = conn.cursor()
                     # Get addresses without ORDER BY to avoid UNIQUE index interference
                     cursor.execute("SELECT address FROM miner_addresses")
@@ -199,7 +169,7 @@ class RoutingTable:
     def get_all_addresses_with_hotkeys(self):
         """Retrieve a list of all addresses and their associated hotkeys from the database."""
         try:
-            with self.db.lock, sqlite3.connect(self.db.db_path) as conn:
+            with self.db.lock, closing(sqlite3.connect(self.db.db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     """
@@ -293,6 +263,12 @@ class RoutingTable:
 
     async def add_unregistered_tee(self, address, hotkey, validator=None):
         """Add an unregistered TEE to the database."""
+        if aiohttp is None:
+            logger.error(
+                "aiohttp is not installed; cannot call MASA TEE API to register TEE worker"
+            )
+            return False
+
         # Get process monitor from validator if available
         process_monitor = None
         if validator:
@@ -451,7 +427,7 @@ class RoutingTable:
 
                         return False
 
-        except aiohttp.ClientError as e:
+        except AiohttpClientError as e:
             error_msg = f"API connection error: {str(e)}"
             logger.error(error_msg)
 
