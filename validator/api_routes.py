@@ -1,6 +1,4 @@
 from fastapi import FastAPI, Depends, HTTPException, Header, Body
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from typing import Optional, Callable
 import os
 from fiber.logging_utils import get_logger
@@ -242,13 +240,6 @@ class ValidatorAPI:
             "calculation_method": "Simple delta (newest - oldest)",
         }
 
-    def register_routes(self) -> None:
-        # Mount static files directory
-        try:
-            self.app.mount("/static", StaticFiles(directory="static"), name="static")
-        except Exception as e:
-            logger.error(f"Failed to mount static files: {str(e)}, cwd: {os.getcwd()}")
-
     def get_api_key_dependency(self) -> Callable:
         """Get a dependency function that checks the API key against config."""
 
@@ -258,12 +249,6 @@ class ValidatorAPI:
         return check_api_key
 
     def register_routes(self) -> None:
-        # Mount static files directory
-        try:
-            self.app.mount("/static", StaticFiles(directory="static"), name="static")
-        except Exception as e:
-            logger.error(f"Failed to mount static files: {str(e)}, cwd: {os.getcwd()}")
-
         self.app.add_api_route(
             "/healthcheck",
             self.healthcheck,
@@ -271,10 +256,8 @@ class ValidatorAPI:
             tags=["healthcheck"],
         )
 
-        # Create API key dependency with config
         api_key_dependency = self.get_api_key_dependency()
 
-        # Add monitoring endpoints with API key protection
         self.app.add_api_route(
             "/monitor/worker-registry",
             self.monitor_worker_registry,
@@ -282,7 +265,6 @@ class ValidatorAPI:
             tags=["monitoring"],
             dependencies=[Depends(api_key_dependency)],
         )
-
         self.app.add_api_route(
             "/monitor/routing-table",
             self.monitor_routing_table,
@@ -290,7 +272,6 @@ class ValidatorAPI:
             tags=["monitoring"],
             dependencies=[Depends(api_key_dependency)],
         )
-
         self.app.add_api_route(
             "/monitor/telemetry",
             self.monitor_telemetry,
@@ -298,15 +279,6 @@ class ValidatorAPI:
             tags=["monitoring"],
             dependencies=[Depends(api_key_dependency)],
         )
-
-        self.app.add_api_route(
-            "/monitor/unregistered-tee-addresses",
-            self.monitor_unregistered_tee_addresses,
-            methods=["GET"],
-            tags=["monitoring"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
         self.app.add_api_route(
             "/monitor/telemetry/all",
             self.monitor_all_telemetry,
@@ -314,7 +286,6 @@ class ValidatorAPI:
             tags=["monitoring"],
             dependencies=[Depends(api_key_dependency)],
         )
-
         self.app.add_api_route(
             "/monitor/telemetry/{hotkey}",
             self.monitor_telemetry_by_hotkey,
@@ -322,7 +293,6 @@ class ValidatorAPI:
             tags=["monitoring"],
             dependencies=[Depends(api_key_dependency)],
         )
-
         self.app.add_api_route(
             "/monitor/worker/{worker_id}",
             self.monitor_worker_hotkey,
@@ -330,105 +300,6 @@ class ValidatorAPI:
             tags=["monitoring"],
             dependencies=[Depends(api_key_dependency)],
         )
-
-        # Add error monitoring endpoints
-        self.app.add_api_route(
-            "/monitor/errors",
-            self.monitor_errors,
-            methods=["GET"],
-            tags=["monitoring"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        self.app.add_api_route(
-            "/monitor/errors/{hotkey}",
-            self.monitor_errors_by_hotkey,
-            methods=["GET"],
-            tags=["monitoring"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        self.app.add_api_route(
-            "/monitor/errors/cleanup",
-            self.cleanup_old_errors,
-            methods=["POST"],
-            tags=["maintenance"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add process monitoring endpoint
-        self.app.add_api_route(
-            "/monitoring/processes",
-            self.monitor_processes,
-            methods=["GET"],
-            tags=["monitoring"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add NATS monitoring endpoint
-        self.app.add_api_route(
-            "/monitoring/nats",
-            self.monitor_nats_publishing,
-            methods=["GET"],
-            tags=["monitoring"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add NATS trigger endpoint
-        self.app.add_api_route(
-            "/trigger/nats/send-connected-nodes",
-            self.trigger_send_connected_nodes,
-            methods=["POST"],
-            tags=["trigger"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add telemetry trigger endpoint
-        self.app.add_api_route(
-            "/trigger/telemetry",
-            self.trigger_telemetry_fetch,
-            methods=["POST"],
-            tags=["trigger"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add direct telemetry endpoint by hotkey
-        self.app.add_api_route(
-            "/telemetry/{hotkey}",
-            self.get_telemetry_by_hotkey,
-            methods=["GET"],
-            tags=["telemetry"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add live telemetry endpoint - fetches fresh data from miner
-        self.app.add_api_route(
-            "/telemetry/{hotkey}/live",
-            self.get_live_telemetry_by_hotkey,
-            methods=["GET"],
-            tags=["telemetry"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add weights monitoring endpoint
-        self.app.add_api_route(
-            "/monitoring/weights",
-            self.monitor_weights_setting,
-            methods=["GET"],
-            tags=["monitoring"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add priority miners monitoring endpoint
-        self.app.add_api_route(
-            "/monitoring/priority-miners",
-            self.monitor_priority_miners_publishing,
-            methods=["GET"],
-            tags=["monitoring"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add score breakdown endpoint for detailed analysis
         self.app.add_api_route(
             "/monitor/score-breakdown/{hotkey}",
             self.monitor_score_breakdown,
@@ -436,180 +307,11 @@ class ValidatorAPI:
             tags=["monitoring"],
             dependencies=[Depends(api_key_dependency)],
         )
-
-        # Add leaderboard endpoint for all miners
         self.app.add_api_route(
             "/monitor/leaderboard",
             self.monitor_leaderboard,
             methods=["GET"],
             tags=["monitoring"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add weighted priority miners list endpoint
-        self.app.add_api_route(
-            "/monitor/priority-miners-list",
-            self.get_weighted_priority_miners_list,
-            methods=["GET"],
-            tags=["monitoring"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add HTML page routes
-        self.app.add_api_route(
-            "/errors",
-            self.serve_error_logs_page,
-            methods=["GET"],
-            tags=["pages"],
-            response_class=HTMLResponse,
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        self.app.add_api_route(
-            "/workers",
-            self.serve_worker_registry_page,
-            methods=["GET"],
-            tags=["pages"],
-            response_class=HTMLResponse,
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        self.app.add_api_route(
-            "/routing",
-            self.serve_routing_table_page,
-            methods=["GET"],
-            tags=["pages"],
-            response_class=HTMLResponse,
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        self.app.add_api_route(
-            "/unregistered-nodes",
-            self.serve_unregistered_nodes_page,
-            methods=["GET"],
-            tags=["pages"],
-            response_class=HTMLResponse,
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add dashboard endpoint
-        self.app.add_api_route(
-            "/dashboard",
-            self.dashboard,
-            methods=["GET"],
-            tags=["dashboard"],
-            response_class=HTMLResponse,
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add JSON API endpoint for dashboard data
-        self.app.add_api_route(
-            "/dashboard/data",
-            self.dashboard_data,
-            methods=["GET"],
-            tags=["dashboard"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add JSON API endpoint for score simulation data
-        self.app.add_api_route(
-            "/score-simulation/data",
-            self.score_simulation_data,
-            methods=["GET"],
-            tags=["simulation"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add Score Simulation HTML Page Route
-        self.app.add_api_route(
-            "/score-simulation",
-            self.serve_score_simulation_page,
-            methods=["GET"],
-            tags=["pages"],
-            response_class=HTMLResponse,
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add unregistered TEE management endpoint
-        self.app.add_api_route(
-            "/add-unregistered-tee",
-            self.add_unregistered_tee,
-            methods=["POST"],
-            tags=["management"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add PostgreSQL telemetry endpoints
-        self.app.add_api_route(
-            "/telemetry/postgresql/all",
-            self.monitor_postgresql_telemetry,
-            methods=["GET"],
-            tags=["telemetry"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        self.app.add_api_route(
-            "/telemetry/postgresql/stats",
-            self.monitor_postgresql_telemetry_stats,
-            methods=["GET"],
-            tags=["telemetry"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        self.app.add_api_route(
-            "/telemetry/postgresql/{hotkey}",
-            self.monitor_postgresql_telemetry_by_hotkey,
-            methods=["GET"],
-            tags=["telemetry"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        # Add multi-platform scoring monitoring endpoints
-        self.app.add_api_route(
-            "/monitor/platforms",
-            self.monitor_platforms,
-            methods=["GET"],
-            tags=["multi-platform"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        self.app.add_api_route(
-            "/monitor/platforms/scores",
-            self.monitor_platform_scores,
-            methods=["GET"],
-            tags=["multi-platform"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        self.app.add_api_route(
-            "/monitor/platforms/emissions",
-            self.monitor_emission_distribution,
-            methods=["GET"],
-            tags=["multi-platform"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        self.app.add_api_route(
-            "/monitor/platforms/weights",
-            self.monitor_weights_distribution,
-            methods=["GET"],
-            tags=["multi-platform"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        self.app.add_api_route(
-            "/monitor/platforms/performance",
-            self.monitor_platform_performance,
-            methods=["GET"],
-            tags=["multi-platform"],
-            dependencies=[Depends(api_key_dependency)],
-        )
-
-        self.app.add_api_route(
-            "/monitor/platforms/analytics",
-            self.monitor_platform_analytics,
-            methods=["GET"],
-            tags=["multi-platform"],
             dependencies=[Depends(api_key_dependency)],
         )
 
@@ -1472,103 +1174,6 @@ class ValidatorAPI:
                 execution_id = None
 
             return {"success": False, "error": str(e)}
-
-    async def dashboard(self):
-        # Implement the dashboard logic for the validator
-        return self.validator.dashboard()
-
-    async def dashboard_data(self):
-        # Implement the dashboard data logic for the validator
-        return self.validator.dashboard_data()
-
-    async def serve_error_logs_page(self):
-        """Serve the error logs HTML page"""
-        try:
-            with open("static/error-logs.html", "r") as f:
-                content = f.read()
-
-            # Replace placeholders with actual values
-            network = self.validator.config.SUBTENSOR_NETWORK.upper()
-            content = content.replace("{{network}}", network)
-            content = content.replace("{{current_year}}", str(datetime.now().year))
-
-            return HTMLResponse(content=content)
-        except Exception as e:
-            logger.error(f"Failed to serve error logs page: {str(e)}")
-            return HTMLResponse(content=f"<html><body>Error: {str(e)}</body></html>")
-
-    async def serve_worker_registry_page(self):
-        """Serve the worker registry HTML page"""
-        try:
-            with open("static/worker-registry.html", "r") as f:
-                content = f.read()
-
-            # Replace placeholders with actual values
-            network = self.validator.config.SUBTENSOR_NETWORK.upper()
-            content = content.replace("{{network}}", network)
-            content = content.replace("{{current_year}}", str(datetime.now().year))
-
-            return HTMLResponse(content=content)
-        except Exception as e:
-            logger.error(f"Failed to serve worker registry page: {str(e)}")
-            return HTMLResponse(content=f"<html><body>Error: {str(e)}</body></html>")
-
-    async def serve_routing_table_page(self):
-        """Serve the routing table HTML page"""
-        try:
-            with open("static/routing-table.html", "r") as f:
-                content = f.read()
-
-            # Replace placeholders with actual values
-            network = self.validator.config.SUBTENSOR_NETWORK.upper()
-            content = content.replace("{{network}}", network)
-            content = content.replace("{{current_year}}", str(datetime.now().year))
-
-            return HTMLResponse(content=content)
-        except Exception as e:
-            logger.error(f"Failed to serve routing table page: {str(e)}")
-            return HTMLResponse(content=f"<html><body>Error: {str(e)}</body></html>")
-
-    async def serve_unregistered_nodes_page(self):
-        """Serve the unregistered nodes HTML page"""
-        try:
-            with open("static/unregistered-nodes.html", "r") as f:
-                content = f.read()
-
-            # Replace placeholders with actual values
-            network = self.validator.config.SUBTENSOR_NETWORK.upper()
-            content = content.replace("{{network}}", network)
-            content = content.replace("{{current_year}}", str(datetime.now().year))
-
-            return HTMLResponse(content=content)
-        except Exception as e:
-            logger.error(f"Failed to serve unregistered nodes page: {str(e)}")
-            return HTMLResponse(content=f"<html><body>Error: {str(e)}</body></html>")
-
-    async def serve_score_simulation_page(self):
-        """Serve the score simulation HTML page"""
-        try:
-            with open("static/score-simulation.html", "r") as f:
-                content = f.read()
-
-            # Replace placeholders with actual values
-            network = self.validator.config.SUBTENSOR_NETWORK.upper()
-            content = content.replace("{{network}}", network)
-            content = content.replace("{{current_year}}", str(datetime.now().year))
-
-            return HTMLResponse(content=content)
-        except Exception as e:
-            logger.error(f"Failed to serve score simulation page: {str(e)}")
-            return HTMLResponse(content=f"<html><body>Error: {str(e)}</body></html>")
-
-    async def score_simulation_data(self):
-        """Return JSON data for score simulation based on telemetry"""
-        try:
-            data = await self.validator.get_score_simulation_data()
-            return data
-        except Exception as e:
-            logger.error(f"Failed to get score simulation data: {str(e)}")
-            return {"error": str(e)}
 
     async def monitor_processes(self):
         """Return process monitoring statistics for background tasks"""
