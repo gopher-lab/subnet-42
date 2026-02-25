@@ -27,6 +27,7 @@ def test_minimal_routes_are_registered():
         "/monitor/worker/{worker_id}",
         "/monitor/score-breakdown/{hotkey}",
         "/monitor/leaderboard",
+        "/monitor/integrity-summary",
     }
     assert expected.issubset(paths)
 

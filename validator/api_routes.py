@@ -314,6 +314,13 @@ class ValidatorAPI:
             tags=["monitoring"],
             dependencies=[Depends(api_key_dependency)],
         )
+        self.app.add_api_route(
+            "/monitor/integrity-summary",
+            self.monitor_integrity_summary,
+            methods=["GET"],
+            tags=["monitoring"],
+            dependencies=[Depends(api_key_dependency)],
+        )
 
     async def monitor_score_breakdown(self, hotkey: str):
         """
@@ -787,6 +794,216 @@ class ValidatorAPI:
                 "traceback": traceback.format_exc(),
                 "leaderboard": [],
             }
+
+    async def monitor_integrity_summary(self, hours: int = 8):
+        """
+        Return compact anomaly and integrity indicators for anti-cheat monitoring.
+        """
+        try:
+            import time
+            import numpy as np
+            from collections import defaultdict
+            from validator.weights import WeightsManager
+
+            def gini(values):
+                vals = np.array([v for v in values if v >= 0], dtype=float)
+                if vals.size == 0 or np.all(vals == 0):
+                    return 0.0
+                vals = np.sort(vals)
+                n = vals.size
+                idx = np.arange(1, n + 1)
+                return float(
+                    (np.sum((2 * idx - n - 1) * vals) / (n * np.sum(vals)))
+                )
+
+            def top_share(values, n):
+                if not values:
+                    return 0.0
+                ordered = sorted(values, reverse=True)
+                total = sum(ordered)
+                if total <= 0:
+                    return 0.0
+                return float(sum(ordered[: min(n, len(ordered))]) / total)
+
+            current_time = int(time.time())
+            cutoff_time = current_time - (max(1, int(hours)) * 3600)
+
+            # Gather and time-filter telemetry records
+            all_telemetry_data = self.validator.telemetry_storage.get_all_telemetry()
+            telemetry_data = []
+            for data in all_telemetry_data:
+                data_time = data.timestamp
+                if isinstance(data_time, str):
+                    try:
+                        from datetime import datetime
+
+                        dt = datetime.fromisoformat(data_time.replace(" ", "T"))
+                        data_time = int(dt.timestamp())
+                    except Exception:
+                        continue
+                elif data_time == 0:
+                    continue
+
+                if data_time >= cutoff_time:
+                    telemetry_data.append(data)
+
+            # Derive delta data in the same way scoring does
+            weights_manager = WeightsManager(self.validator)
+            delta_data = weights_manager._get_delta_node_data(telemetry_data)
+
+            # Pull leaderboard summary for score-share diagnostics
+            leaderboard_data = await self.monitor_leaderboard(hours=hours, limit=0)
+            leaderboard = leaderboard_data.get("leaderboard", [])
+            score_values = [float(m.get("final_score", 0.0)) for m in leaderboard]
+            activity_values = [float(m.get("total_activity", 0.0)) for m in leaderboard]
+
+            # Identity integrity checks
+            worker_regs = self.validator.routing_table.get_all_worker_registrations()
+            routing_rows = self.validator.routing_table.get_all_addresses_with_hotkeys()
+
+            worker_to_hotkeys_registry = defaultdict(set)
+            hotkey_to_workers_registry = defaultdict(set)
+            for worker_id, hotkey in worker_regs:
+                worker_to_hotkeys_registry[worker_id].add(hotkey)
+                hotkey_to_workers_registry[hotkey].add(worker_id)
+
+            worker_to_hotkeys_routing = defaultdict(set)
+            hotkey_to_workers_routing = defaultdict(set)
+            address_to_hotkeys = defaultdict(set)
+            for hotkey, address, worker_id in routing_rows:
+                if worker_id:
+                    worker_to_hotkeys_routing[worker_id].add(hotkey)
+                    hotkey_to_workers_routing[hotkey].add(worker_id)
+                if address:
+                    address_to_hotkeys[address].add(hotkey)
+
+            worker_id_to_hotkey_violations = sorted(
+                [
+                    {
+                        "worker_id": worker_id,
+                        "hotkeys": sorted(list(hotkeys)),
+                    }
+                    for worker_id, hotkeys in worker_to_hotkeys_routing.items()
+                    if len(hotkeys) > 1
+                ],
+                key=lambda x: len(x["hotkeys"]),
+                reverse=True,
+            )
+            address_to_hotkey_violations = sorted(
+                [
+                    {
+                        "address": address,
+                        "hotkeys": sorted(list(hotkeys)),
+                    }
+                    for address, hotkeys in address_to_hotkeys.items()
+                    if len(hotkeys) > 1
+                ],
+                key=lambda x: len(x["hotkeys"]),
+                reverse=True,
+            )
+            hotkeys_with_multiple_worker_ids = sorted(
+                [
+                    {
+                        "hotkey": hotkey,
+                        "worker_ids": sorted(list(worker_ids)),
+                    }
+                    for hotkey, worker_ids in hotkey_to_workers_registry.items()
+                    if len(worker_ids) > 1
+                ],
+                key=lambda x: len(x["worker_ids"]),
+                reverse=True,
+            )
+
+            # Compare active routing worker against registry set
+            hotkey_to_active_worker_routing = {
+                hotkey: worker_id
+                for hotkey, _, worker_id in routing_rows
+                if worker_id
+            }
+            routing_registry_mismatches = []
+            for hotkey, active_worker in hotkey_to_active_worker_routing.items():
+                known_workers = hotkey_to_workers_registry.get(hotkey, set())
+                if known_workers and active_worker not in known_workers:
+                    routing_registry_mismatches.append(
+                        {
+                            "hotkey": hotkey,
+                            "active_routing_worker_id": active_worker,
+                            "registry_worker_ids": sorted(list(known_workers)),
+                        }
+                    )
+
+            # Delta integrity checks
+            nonzero_deltas = []
+            for node in delta_data:
+                total = 0
+                for value in (node.stats_json or {}).values():
+                    if isinstance(value, (int, float)):
+                        total += value
+                nonzero_deltas.append((node.hotkey, float(total)))
+            nonzero_deltas.sort(key=lambda x: x[1], reverse=True)
+
+            zero_delta_hotkeys = [
+                hotkey for hotkey, total in nonzero_deltas if total == 0.0
+            ]
+
+            active_count = len([v for v in activity_values if v > 0])
+            total_activity = float(sum(activity_values))
+            expected_per_active = (
+                float(total_activity / active_count) if active_count > 0 else 0.0
+            )
+            chi_square_activity = 0.0
+            if expected_per_active > 0:
+                chi_square_activity = float(
+                    sum(
+                        ((v - expected_per_active) ** 2) / expected_per_active
+                        for v in activity_values
+                        if v > 0
+                    )
+                )
+
+            return {
+                "success": True,
+                "window": {
+                    "hours_analyzed": int(hours),
+                    "cutoff_time": cutoff_time,
+                    "analysis_time": current_time,
+                    "records_used": len(telemetry_data),
+                    "miners_scored": len(delta_data),
+                },
+                "distribution": {
+                    "active_miners": int(active_count),
+                    "total_network_activity": int(total_activity),
+                    "expected_share_per_miner": (
+                        float(1.0 / active_count) if active_count > 0 else 0.0
+                    ),
+                    "top1_score_share": round(top_share(score_values, 1), 6),
+                    "top5_score_share": round(top_share(score_values, 5), 6),
+                    "top10_score_share": round(top_share(score_values, 10), 6),
+                    "top1_activity_share": round(top_share(activity_values, 1), 6),
+                    "top5_activity_share": round(top_share(activity_values, 5), 6),
+                    "top10_activity_share": round(top_share(activity_values, 10), 6),
+                    "gini_score": round(gini(score_values), 6),
+                    "gini_activity": round(gini(activity_values), 6),
+                    "chi_square_activity": round(chi_square_activity, 4),
+                },
+                "identity_integrity": {
+                    "worker_id_to_hotkey_violations": worker_id_to_hotkey_violations,
+                    "address_to_hotkey_violations": address_to_hotkey_violations,
+                    "hotkeys_with_multiple_worker_ids": hotkeys_with_multiple_worker_ids,
+                    "routing_registry_mismatches": routing_registry_mismatches,
+                },
+                "delta_integrity": {
+                    "zero_delta_hotkeys_count": len(zero_delta_hotkeys),
+                    "zero_delta_hotkeys_sample": zero_delta_hotkeys[:25],
+                    "largest_delta_hotkeys": [
+                        {"hotkey": hotkey, "delta_sum": int(total)}
+                        for hotkey, total in nonzero_deltas[:10]
+                    ],
+                },
+            }
+        except Exception as e:
+            logger.error(f"Failed to generate integrity summary: {str(e)}")
+            return {"success": False, "error": str(e)}
 
     async def healthcheck(self):
         # Implement the healthcheck logic for the validator
