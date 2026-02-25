@@ -321,6 +321,13 @@ class ValidatorAPI:
             tags=["monitoring"],
             dependencies=[Depends(api_key_dependency)],
         )
+        self.app.add_api_route(
+            "/add-unregistered-tee",
+            self.add_unregistered_tee,
+            methods=["POST"],
+            tags=["management"],
+            dependencies=[Depends(api_key_dependency)],
+        )
 
     async def monitor_score_breakdown(self, hotkey: str):
         """

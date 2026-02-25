@@ -28,6 +28,7 @@ def test_minimal_routes_are_registered():
         "/monitor/score-breakdown/{hotkey}",
         "/monitor/leaderboard",
         "/monitor/integrity-summary",
+        "/add-unregistered-tee",
     }
     assert expected.issubset(paths)
 
@@ -48,7 +49,6 @@ def test_removed_ui_and_ops_routes_return_404():
         "/trigger/telemetry",
         "/monitoring/processes",
         "/monitor/unregistered-tee-addresses",
-        "/add-unregistered-tee",
         "/telemetry/postgresql/all",
     ]
     for path in removed_paths:
