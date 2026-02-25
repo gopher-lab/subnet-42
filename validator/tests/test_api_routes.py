@@ -1,117 +1,78 @@
-import unittest
-from unittest.mock import Mock, patch, AsyncMock
-import os
+from unittest.mock import Mock
+
+from fastapi.testclient import TestClient
+
 from validator.api_routes import ValidatorAPI
-from fastapi import HTTPException
 
 
-class TestApiRoutes(unittest.TestCase):
-
-    def setUp(self):
-        # Create mock validator
-        self.mock_validator = Mock()
-        self.api = ValidatorAPI(self.mock_validator)
-
-        # Set up environment variable
-        self.original_env = os.environ.get("MASA_TEE_API", None)
-        os.environ["MASA_TEE_API"] = "https://api.masa.test"
-
-    def tearDown(self):
-        # Restore original environment variable
-        if self.original_env is not None:
-            os.environ["MASA_TEE_API"] = self.original_env
-        else:
-            del os.environ["MASA_TEE_API"]
-
-    @patch("aiohttp.ClientSession.post")
-    async def test_add_unregistered_tee_success(self, mock_post):
-        """Test successful registration of a TEE worker."""
-        # Setup mock response
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.json = AsyncMock(
-            return_value={
-                "message": "Worker registered successfully",
-                "address": "test_address",
-            }
-        )
-        mock_post.return_value.__aenter__.return_value = mock_response
-
-        # Call the method
-        result = await self.api.add_unregistered_tee(
-            address="test_address", hotkey="test_hotkey"
-        )
-
-        # Verify the result
-        self.assertTrue(result["success"])
-        self.assertIn("Successfully registered TEE worker", result["message"])
-
-        # Verify the API was called with the correct parameters
-        mock_post.assert_called_once()
-        call_args = mock_post.call_args
-        self.assertEqual(call_args[0][0], "https://api.masa.test/register-tee-worker")
-
-        # Verify the payload
-        payload = call_args[1]["json"]
-        self.assertEqual(payload["address"], "test_address")
-        self.assertEqual(payload["hotkey"], "test_hotkey")
-
-    @patch("aiohttp.ClientSession.post")
-    async def test_add_unregistered_tee_api_error(self, mock_post):
-        """Test handling of API errors when registering a TEE worker."""
-        # Setup mock response with error
-        mock_response = AsyncMock()
-        mock_response.status = 500
-        mock_response.text = AsyncMock(return_value="Internal Server Error")
-        mock_post.return_value.__aenter__.return_value = mock_response
-
-        # Call the method
-        result = await self.api.add_unregistered_tee(
-            address="test_address", hotkey="test_hotkey"
-        )
-
-        # Verify the result
-        self.assertFalse(result["success"])
-        self.assertIn("API call failed with status 500", result["error"])
-
-    @patch("aiohttp.ClientSession.post")
-    async def test_add_unregistered_tee_connection_error(self, mock_post):
-        """Test handling of connection errors when registering a TEE worker."""
-        # Setup mock to raise a connection error
-        mock_post.side_effect = AsyncMock(side_effect=Exception("Connection refused"))
-
-        # Call the method
-        result = await self.api.add_unregistered_tee(
-            address="test_address", hotkey="test_hotkey"
-        )
-
-        # Verify the result
-        self.assertFalse(result["success"])
-        self.assertIn("Connection refused", result["error"])
-
-    async def test_add_unregistered_tee_missing_api_url(self):
-        """Test handling of missing API URL."""
-        # Remove the environment variable
-        del os.environ["MASA_TEE_API"]
-
-        # Call the method
-        result = await self.api.add_unregistered_tee(
-            address="test_address", hotkey="test_hotkey"
-        )
-
-        # Verify the result
-        self.assertFalse(result["success"])
-        self.assertIn("MASA_TEE_API environment variable not set", result["error"])
-
-    async def test_add_unregistered_tee_missing_params(self):
-        """Test validation of required parameters."""
-        # Call with missing parameters
-        with self.assertRaises(HTTPException) as context:
-            await self.api.add_unregistered_tee(address="", hotkey="test_hotkey")
-
-        self.assertEqual(context.exception.status_code, 400)
-        self.assertIn("required fields", str(context.exception.detail))
+def _build_api():
+    validator = Mock()
+    validator.healthcheck.return_value = {"status": "ok"}
+    validator.config.API_KEY = "test-key"
+    api = ValidatorAPI(validator)
+    return api
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_minimal_routes_are_registered():
+    api = _build_api()
+    paths = {route.path for route in api.app.routes}
+
+    expected = {
+        "/healthcheck",
+        "/monitor/worker-registry",
+        "/monitor/routing-table",
+        "/monitor/telemetry",
+        "/monitor/telemetry/all",
+        "/monitor/telemetry/{hotkey}",
+        "/monitor/worker/{worker_id}",
+        "/monitor/score-breakdown/{hotkey}",
+        "/monitor/leaderboard",
+        "/monitor/integrity-summary",
+        "/add-unregistered-tee",
+    }
+    assert expected.issubset(paths)
+
+
+def test_removed_ui_and_ops_routes_return_404():
+    api = _build_api()
+    client = TestClient(api.app)
+    headers = {"X-API-Key": "test-key"}
+
+    removed_paths = [
+        "/dashboard",
+        "/dashboard/data",
+        "/errors",
+        "/workers",
+        "/routing",
+        "/unregistered-nodes",
+        "/score-simulation",
+        "/trigger/telemetry",
+        "/monitoring/processes",
+        "/monitor/unregistered-tee-addresses",
+        "/telemetry/postgresql/all",
+    ]
+    for path in removed_paths:
+        response = client.get(path, headers=headers)
+        assert response.status_code == 404, path
+
+
+def test_healthcheck_still_works():
+    api = _build_api()
+    client = TestClient(api.app)
+
+    response = client.get("/healthcheck")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_leaderboard_supports_offset_param():
+    api = _build_api()
+    client = TestClient(api.app)
+    headers = {"X-API-Key": "test-key"}
+
+    response = client.get(
+        "/monitor/leaderboard?hours=8&limit=10&offset=20", headers=headers
+    )
+    # It may return success or an internal error if backend deps are mocked,
+    # but the route must exist and not 404.
+    assert response.status_code != 404

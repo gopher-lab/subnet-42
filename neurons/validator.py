@@ -4,7 +4,6 @@ import os
 import asyncio
 import uvicorn
 from typing import Optional, Any
-import datetime
 
 from fiber.chain import chain_utils, interface
 from fiber.chain.metagraph import Metagraph
@@ -263,104 +262,6 @@ class Validator:
             logger.error(f"Failed to get validator info: {str(e)}")
             return None
 
-    def dashboard(self):
-        """Return a simple HTML dashboard for the validator."""
-        try:
-            # Get basic validator info
-            info = self.healthcheck()
-
-            # Get worker registry stats
-            worker_count = len(self.routing_table.get_all_worker_registrations())
-
-            # Get error stats from the last 24 hours
-            error_count_24h = self.node_manager.errors_storage.get_error_count(hours=24)
-
-            # Get uptime (approximate)
-            import time
-            import math
-
-            start_time = os.getenv("START_TIME", str(int(time.time())))
-            uptime_seconds = int(time.time()) - int(start_time)
-            uptime_days = math.floor(uptime_seconds / (60 * 60 * 24))
-
-            # Read the HTML template
-            try:
-                with open("static/index.html", "r") as f:
-                    template = f.read()
-            except FileNotFoundError:
-                logger.error("Dashboard template not found")
-                return "Dashboard template not found"
-
-            # Replace template variables with actual values
-            replace_dict = {
-                "{{ss58_address}}": info.get("ss58_address", "N/A"),
-                "{{uid}}": info.get("uid", "N/A"),
-                "{{ip}}": info.get("ip", "N/A"),
-                "{{port}}": info.get("port", "N/A"),
-                "{{subtensor_network}}": info.get("subtensor_network", "N/A"),
-                "{{netuid}}": info.get("netuid", "N/A"),
-                "{{worker_count}}": str(worker_count),
-                "{{error_count_24h}}": str(error_count_24h),
-                "{{network}}": info.get("subtensor_network", "N/A").upper(),
-                "{{uptime_days}}": str(uptime_days),
-                "{{current_year}}": str(datetime.datetime.now().year),
-            }
-
-            for key, value in replace_dict.items():
-                template = template.replace(key, value)
-
-            return template
-
-        except Exception as e:
-            logger.error(f"Failed to generate dashboard: {str(e)}")
-            return f"""
-            <html>
-                <body>
-                    <h1>Dashboard Error</h1>
-                    <p>Failed to load dashboard: {str(e)}</p>
-                </body>
-            </html>
-            """
-
-    def dashboard_data(self):
-        """Return a JSON object with dashboard data for API calls."""
-        try:
-            # Get basic validator info
-            info = self.healthcheck()
-
-            # Get worker registry stats
-            worker_count = len(self.routing_table.get_all_worker_registrations())
-
-            # Get error stats from the last 24 hours
-            error_count_24h = self.node_manager.errors_storage.get_error_count(hours=24)
-
-            # Get uptime (approximate)
-            import time
-            import math
-
-            start_time = os.getenv("START_TIME", str(int(time.time())))
-            uptime_seconds = int(time.time()) - int(start_time)
-            uptime_days = math.floor(uptime_seconds / (60 * 60 * 24))
-
-            # Return JSON data
-            return {
-                "ss58_address": info.get("ss58_address", "N/A"),
-                "uid": info.get("uid", "N/A"),
-                "ip": info.get("ip", "N/A"),
-                "port": info.get("port", "N/A"),
-                "subtensor_network": info.get("subtensor_network", "N/A"),
-                "netuid": info.get("netuid", "N/A"),
-                "worker_count": worker_count,
-                "error_count_24h": error_count_24h,
-                "uptime_days": uptime_days,
-                "network": info.get("subtensor_network", "N/A").upper(),
-                "current_year": datetime.datetime.now().year,
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to generate dashboard data: {str(e)}")
-            return {"error": str(e)}
-
     async def _cached_nats_loop(self):
         """Background task to send cached connected nodes every 5 minutes."""
         while True:
@@ -382,46 +283,3 @@ class Validator:
                 logger.error(f"Error in cached NATS loop: {str(e)}")
                 # Continue the loop even if there's an error
 
-    async def get_score_simulation_data(self):
-        """Calculate simulated scores based on recently fetched telemetry data."""
-        logger.info("Starting score simulation based on recent telemetry...")
-        try:
-            # 1. Fetch the latest telemetry data for reachable nodes
-            telemetry = self.telemetry_storage.get_all_telemetry()
-
-            data_to_score = self.weights_manager._get_delta_node_data(telemetry)
-
-            logger.info(f"Data to score: {data_to_score}")
-            # 2. Calculate weights (scores) using the WeightsManager
-            logger.info("Calculating weights using WeightsManager...")
-            uids, scores = await self.weights_manager.calculate_weights(
-                data_to_score, simulation=True
-            )
-
-            logger.info(f"Weights calculated for {len(uids)} UIDs.")
-
-            if uids is None or scores is None or len(uids) != len(scores):
-                logger.error("Mismatch or None returned from calculate_weights.")
-                return {"scores": []}  # Return empty if calculation failed
-
-            # 3. Map UIDs back to hotkeys using the metagraph
-            uid_to_hotkey = {
-                node.node_id: node.hotkey for node in self.metagraph.nodes.values()
-            }
-
-            # 4. Format the scores for the API response - directly use raw scores from calculate_weights
-            formatted_scores = [
-                {"hotkey": uid_to_hotkey.get(int(uid)), "score": float(score)}
-                for uid, score in zip(uids, scores)
-                if int(uid) in uid_to_hotkey
-            ]
-
-            logger.info(
-                f"Score simulation complete. Returning {len(formatted_scores)} scores."
-            )
-            return {"scores": formatted_scores}
-
-        except Exception as e:
-            logger.error(f"Error during score simulation: {str(e)}", exc_info=True)
-            # Raise the exception to see the full traceback in logs
-            raise

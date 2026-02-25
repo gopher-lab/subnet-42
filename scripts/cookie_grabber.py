@@ -4,6 +4,7 @@ import time
 import os
 import logging
 import datetime
+import platform
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import WebDriverException
@@ -311,8 +312,8 @@ def kill_orphan_chrome_processes():
         logger.debug(f"Error checking for orphaned processes: {e}")
 
 
-def clear_profile_cache(profile_dir):
-    """Clear cache and temporary files from profile to prevent slowdowns."""
+def clear_profile_cache(profile_dir, clear_heavy_cache=False):
+    """Clear profile lock files always; clear heavy caches only when requested."""
     cache_dirs = [
         os.path.join(profile_dir, "Default", "Cache"),
         os.path.join(profile_dir, "Default", "Code Cache"),
@@ -339,16 +340,17 @@ def clear_profile_cache(profile_dir):
         except Exception as e:
             logger.debug(f"Could not remove lock file {lock_file}: {e}")
     
-    for cache_dir in cache_dirs:
-        try:
-            if os.path.exists(cache_dir):
-                shutil.rmtree(cache_dir)
-                logger.debug(f"Cleared cache directory: {cache_dir}")
-        except Exception as e:
-            logger.debug(f"Could not clear cache {cache_dir}: {e}")
+    if clear_heavy_cache:
+        for cache_dir in cache_dirs:
+            try:
+                if os.path.exists(cache_dir):
+                    shutil.rmtree(cache_dir)
+                    logger.debug(f"Cleared cache directory: {cache_dir}")
+            except Exception as e:
+                logger.debug(f"Could not clear cache {cache_dir}: {e}")
 
 
-def setup_driver(username):
+def setup_driver(username, aggressive_cleanup=False):
     """Set up and return an undetected Chrome driver with a persistent profile per account."""
     logger.info("Setting up undetected Chrome driver...")
     
@@ -359,8 +361,8 @@ def setup_driver(username):
     profile_dir = os.path.join(OUTPUT_DIR, "profiles", username)
     os.makedirs(profile_dir, exist_ok=True)
 
-    # Clear cache to prevent slowdowns on subsequent runs
-    clear_profile_cache(profile_dir)
+    # Always clear lock files; only clear heavy caches on recovery paths.
+    clear_profile_cache(profile_dir, clear_heavy_cache=aggressive_cleanup)
 
     # Enhance profile with realistic history/bookmarks if it's a new profile
     if not os.path.exists(os.path.join(profile_dir, "Default")):
@@ -483,6 +485,11 @@ def setup_driver(username):
             {"brand": "Chromium", "version": browser_version},
             {"brand": "Google Chrome", "version": browser_version},
         ]
+        cpu_arch = platform.machine().lower()
+        if "arm" in cpu_arch or "aarch64" in cpu_arch:
+            client_hint_arch = "arm"
+        else:
+            client_hint_arch = "x86"
 
         try:
             driver.execute_cdp_cmd(
@@ -495,7 +502,7 @@ def setup_driver(username):
                         "fullVersionList": full_version_list,
                         "platform": "macOS",
                         "platformVersion": "14.5.0",
-                        "architecture": "x86",
+                        "architecture": client_hint_arch,
                         "model": "",
                         "mobile": False,
                         "bitness": "64",
@@ -505,34 +512,38 @@ def setup_driver(username):
         except Exception as e:
             logger.warning(f"Failed to set UA override via CDP: {str(e)}")
 
-        # Timezone override (optional)
-        timezone_id = os.environ.get("TIMEZONE_ID", "UTC")
-        try:
-            driver.execute_cdp_cmd(
-                "Emulation.setTimezoneOverride", {"timezoneId": timezone_id}
-            )
-        except Exception as e:
-            logger.warning(f"Failed to set timezone override: {str(e)}")
-
-        # Geolocation permissions and override (optional)
-        try:
-            lat = float(os.environ.get("GEO_LAT", "37.7749"))
-            lon = float(os.environ.get("GEO_LON", "-122.4194"))
-            acc = float(os.environ.get("GEO_ACC", "100"))
-            # Grant permission for Twitter origin
+        # Timezone override only when explicitly provided to avoid proxy/locale mismatch.
+        timezone_id = os.environ.get("TIMEZONE_ID")
+        if timezone_id:
             try:
                 driver.execute_cdp_cmd(
-                    "Browser.grantPermissions",
-                    {"permissions": ["geolocation"], "origin": "https://x.com"},
+                    "Emulation.setTimezoneOverride", {"timezoneId": timezone_id}
                 )
-            except Exception:
-                pass
-            driver.execute_cdp_cmd(
-                "Emulation.setGeolocationOverride",
-                {"latitude": lat, "longitude": lon, "accuracy": acc},
-            )
-        except Exception as e:
-            logger.warning(f"Failed to set geolocation override: {str(e)}")
+            except Exception as e:
+                logger.warning(f"Failed to set timezone override: {str(e)}")
+
+        # Geolocation override only when explicitly provided to avoid mismatched signals.
+        geo_lat = os.environ.get("GEO_LAT")
+        geo_lon = os.environ.get("GEO_LON")
+        if geo_lat and geo_lon:
+            try:
+                lat = float(geo_lat)
+                lon = float(geo_lon)
+                acc = float(os.environ.get("GEO_ACC", "100"))
+                # Grant permission for Twitter origin
+                try:
+                    driver.execute_cdp_cmd(
+                        "Browser.grantPermissions",
+                        {"permissions": ["geolocation"], "origin": "https://x.com"},
+                    )
+                except Exception:
+                    pass
+                driver.execute_cdp_cmd(
+                    "Emulation.setGeolocationOverride",
+                    {"latitude": lat, "longitude": lon, "accuracy": acc},
+                )
+            except Exception as e:
+                logger.warning(f"Failed to set geolocation override: {str(e)}")
 
         return driver
     except Exception as e:
@@ -979,6 +990,55 @@ def generate_cookies_json(cookie_values, domain="x.com"):
     return cookies
 
 
+def wait_for_login_page_ready(driver, max_wait=30):
+    """Wait until login page controls are interactive."""
+    wait_start = time.time()
+    while time.time() - wait_start < max_wait:
+        try:
+            ready_state = driver.execute_script("return document.readyState")
+            login_elements = driver.find_elements(
+                By.CSS_SELECTOR,
+                'input[name="text"], div[role="button"], form[data-testid="LoginForm"]',
+            )
+            if ready_state == "complete" and any(
+                elem.is_displayed() for elem in login_elements if login_elements
+            ):
+                return True
+        except WebDriverException as e:
+            if "no such window" in str(e).lower() or "no such session" in str(e).lower():
+                raise
+            logger.warning(f"Error checking page load: {str(e)}")
+        time.sleep(0.5)
+    return False
+
+
+def wait_for_post_click_transition(driver, previous_url, timeout=CLICK_WAIT):
+    """Wait for login UI to advance and return as soon as it does."""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            current_url = driver.current_url
+            if current_url != previous_url:
+                return True
+
+            markers = driver.find_elements(
+                By.CSS_SELECTOR,
+                'input[name="password"], input[type="password"], input[name="text"], input[type="tel"], input[type="email"], input[autocomplete="one-time-code"], form[data-testid="LoginForm"]',
+            )
+            if markers and any(elem.is_displayed() for elem in markers):
+                return True
+        except WebDriverException as e:
+            if "no such window" in str(e).lower() or "no such session" in str(e).lower():
+                raise
+        time.sleep(0.25)
+    return False
+
+
+def human_like_post_action_pause():
+    """Small natural pause after a user action."""
+    time.sleep(random.uniform(0.35, 0.9))
+
+
 def process_account_state_machine(driver, username, password):
     """Process an account using a state machine approach with continuous polling."""
     logger.info(f"==========================================")
@@ -992,50 +1052,29 @@ def process_account_state_machine(driver, username, password):
     email = extract_email_from_password(password)
     logger.info(f"Using email {email} for account {username}")
 
-    # Navigate to login page
+    # Navigate to login page with short in-session retries before full restart.
     try:
-        driver.get(TWITTER_LOGIN_URL)
-
-        # Wait for page to load using document readyState
-        wait_start = time.time()
-        max_wait = 30  # Maximum seconds to wait
-
-        while time.time() - wait_start < max_wait:
-            # Check if document is ready
-            try:
-                ready_state = driver.execute_script("return document.readyState")
-
-                # Check if login form elements are visible
-                login_elements = driver.find_elements(
-                    By.CSS_SELECTOR,
-                    'input[name="text"], div[role="button"], form[data-testid="LoginForm"]',
+        nav_ready = False
+        nav_start = time.time()
+        for nav_attempt in range(1, 4):
+            attempt_start = time.time()
+            driver.get(TWITTER_LOGIN_URL)
+            if wait_for_login_page_ready(driver, max_wait=30):
+                logger.info(
+                    f"Login page loaded successfully (attempt {nav_attempt}, "
+                    f"{time.time() - attempt_start:.1f}s)"
                 )
-
-                if ready_state == "complete" and any(
-                    elem.is_displayed() for elem in login_elements if login_elements
-                ):
-                    logger.info("Login page loaded successfully")
-                    break
-            except WebDriverException as e:
-                # Check if window was closed - if so, propagate this up immediately
-                if (
-                    "no such window" in str(e).lower()
-                    or "no such session" in str(e).lower()
-                ):
-                    logger.info(
-                        "Browser window was closed during page load. Might be for VPN switching."
-                    )
-                    raise
-                logger.warning(f"Error checking page load: {str(e)}")
-
-            # Short sleep between checks
-            time.sleep(0.5)
-
-        # If we got here and timed out, log a warning but continue
-        if time.time() - wait_start >= max_wait:
+                nav_ready = True
+                break
             logger.warning(
-                "Timed out waiting for login page to fully load, but continuing anyway"
+                f"Login page readiness timed out on attempt {nav_attempt} "
+                f"({time.time() - attempt_start:.1f}s)"
             )
+            if nav_attempt < 3:
+                time.sleep(random.uniform(1.0, 2.5))
+        logger.info(f"Login page stage duration: {time.time() - nav_start:.1f}s")
+        if not nav_ready:
+            logger.warning("Proceeding despite login page readiness timeouts")
     except WebDriverException as e:
         # Check if window was closed - if so, propagate this up immediately
         if "no such window" in str(e).lower() or "no such session" in str(e).lower():
@@ -1052,6 +1091,8 @@ def process_account_state_machine(driver, username, password):
     last_url = driver.current_url
     login_successful = False
     manual_intervention_active = False
+    last_filled_at = {"username": 0.0, "password": 0.0, "email": 0.0}
+    last_filled_url = {"username": "", "password": "", "email": ""}
 
     # State machine loop
     loop_count = 0
@@ -1110,8 +1151,12 @@ def process_account_state_machine(driver, username, password):
                                 f"Filled verification input with email: {email}"
                             )
                             time.sleep(1)
+                            before_click_url = driver.current_url
                             click_next_button(driver)
-                            time.sleep(CLICK_WAIT)
+                            human_like_post_action_pause()
+                            wait_for_post_click_transition(
+                                driver, before_click_url, timeout=CLICK_WAIT
+                            )
                             last_action_time = time.time()
                             continue
 
@@ -1154,24 +1199,44 @@ def process_account_state_machine(driver, username, password):
                                 ):
                                     for btn in next_buttons:
                                         if btn.is_displayed():
+                                            before_click_url = driver.current_url
                                             btn.click()
                                             logger.info(
                                                 "Clicked Next button on account safety screen"
                                             )
-                                            time.sleep(CLICK_WAIT)
+                                            human_like_post_action_pause()
+                                            wait_for_post_click_transition(
+                                                driver,
+                                                before_click_url,
+                                                timeout=CLICK_WAIT,
+                                            )
                                             last_action_time = time.time()
                                             break
                                 else:
                                     # If can't find specific Next button, try generic button click
+                                    before_click_url = driver.current_url
                                     click_next_button(driver)
-                                    time.sleep(CLICK_WAIT)
+                                    human_like_post_action_pause()
+                                    wait_for_post_click_transition(
+                                        driver, before_click_url, timeout=CLICK_WAIT
+                                    )
                                     last_action_time = time.time()
                                 continue
 
                 # Check for email input (older style)
-                if find_and_fill_input(driver, "email", email):
+                can_refill_email = (
+                    current_url != last_filled_url["email"]
+                    or time.time() - last_filled_at["email"] > 12
+                )
+                if can_refill_email and find_and_fill_input(driver, "email", email):
+                    last_filled_at["email"] = time.time()
+                    last_filled_url["email"] = current_url
+                    before_click_url = driver.current_url
                     click_next_button(driver)
-                    time.sleep(CLICK_WAIT)
+                    human_like_post_action_pause()
+                    wait_for_post_click_transition(
+                        driver, before_click_url, timeout=CLICK_WAIT
+                    )
                     last_action_time = time.time()
                     continue
 
@@ -1194,16 +1259,36 @@ def process_account_state_machine(driver, username, password):
 
             # Normal login flow - try to identify and fill inputs
             # Username field
-            if find_and_fill_input(driver, "username", username):
+            can_refill_username = (
+                current_url != last_filled_url["username"]
+                or time.time() - last_filled_at["username"] > 12
+            )
+            if can_refill_username and find_and_fill_input(driver, "username", username):
+                last_filled_at["username"] = time.time()
+                last_filled_url["username"] = current_url
+                before_click_url = driver.current_url
                 click_next_button(driver)
-                time.sleep(CLICK_WAIT)
+                human_like_post_action_pause()
+                wait_for_post_click_transition(
+                    driver, before_click_url, timeout=CLICK_WAIT
+                )
                 last_action_time = time.time()
                 continue
 
             # Password field
-            if find_and_fill_input(driver, "password", password):
+            can_refill_password = (
+                current_url != last_filled_url["password"]
+                or time.time() - last_filled_at["password"] > 12
+            )
+            if can_refill_password and find_and_fill_input(driver, "password", password):
+                last_filled_at["password"] = time.time()
+                last_filled_url["password"] = current_url
+                before_click_url = driver.current_url
                 click_next_button(driver)
-                time.sleep(CLICK_WAIT)
+                human_like_post_action_pause()
+                wait_for_post_click_transition(
+                    driver, before_click_url, timeout=CLICK_WAIT
+                )
                 last_action_time = time.time()
                 continue
 
@@ -1211,7 +1296,7 @@ def process_account_state_machine(driver, username, password):
             if time.time() - last_action_time > 30:  # 30 seconds of no action
                 if click_next_button(driver):
                     logger.info("Clicked a button after 30 seconds of inactivity")
-                    time.sleep(CLICK_WAIT)
+                    human_like_post_action_pause()
                     last_action_time = time.time()
                     continue
 
@@ -1238,9 +1323,9 @@ def process_account_state_machine(driver, username, password):
     # After the loop, check if login was successful
     if login_successful:
         try:
-            # Give cookies a moment to be fully set
-            logger.info("Login detected, waiting briefly for cookies to be set...")
-            time.sleep(2)
+            # Keep a small natural pause, then rely on adaptive cookie checks.
+            logger.info("Login detected, verifying cookies...")
+            human_like_post_action_pause()
             
             # Ensure we are on a stable post-login page before cookie extraction.
             current = driver.current_url.lower()
@@ -1251,7 +1336,14 @@ def process_account_state_machine(driver, username, password):
                 logger.info("Navigating to https://x.com/home to stabilize authenticated session")
                 try:
                     driver.get("https://x.com/home")
-                    time.sleep(3)  # Brief wait for cookie-setting redirects/scripts
+                    nav_wait_start = time.time()
+                    while time.time() - nav_wait_start < 4:
+                        try:
+                            if driver.execute_script("return document.readyState") == "complete":
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(0.25)
                 except WebDriverException as e:
                     if (
                         "no such window" in str(e).lower()
@@ -1266,7 +1358,11 @@ def process_account_state_machine(driver, username, password):
                 logger.info(f"On X/Twitter domain, extracting cookies from: {current}")
 
             # Poll for required post-login session cookies before final extraction.
+            cookie_wait_start = time.time()
             cookie_values = wait_for_required_session_cookies(driver)
+            logger.info(
+                f"Cookie readiness stage duration: {time.time() - cookie_wait_start:.1f}s"
+            )
             domain = "x.com"
             cookies_json = generate_cookies_json(cookie_values, domain)
 
@@ -1360,7 +1456,11 @@ def main():
                     except:
                         pass
 
-                driver = setup_driver(username)
+                driver_setup_start = time.time()
+                driver = setup_driver(username, aggressive_cleanup=(retry_count > 0))
+                logger.info(
+                    f"Driver setup duration: {time.time() - driver_setup_start:.1f}s"
+                )
                 logger.info(
                     f"Browser initialized for account: {username} (attempt {retry_count+1}/{max_retries})"
                 )
