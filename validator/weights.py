@@ -20,11 +20,11 @@ logger = get_logger(__name__)
 
 def apply_kurtosis_custom(
     x,
-    top_percentile=90,
-    reward_factor=0.4,
-    steepness=2.0,
-    center_sensitivity=0.5,
-    boost_factor=0.2,
+    top_percentile=95,
+    reward_factor=0.0,
+    steepness=1.1,
+    center_sensitivity=0.1,
+    boost_factor=0.03,
 ):
     """
     Apply custom kurtosis-like function with configurable parameters to weight
@@ -52,10 +52,11 @@ def apply_kurtosis_custom(
     # Add configurable boost for high performers
     y += boost_factor * np.tanh(x_centered)
 
-    # Additional weighting for top percentile
-    threshold = np.percentile(x, top_percentile)
-    top_mask = x >= threshold
-    y[top_mask] *= 1 + reward_factor
+    # Optional extra top-percentile emphasis (disabled by default for near-linear shape)
+    if reward_factor > 0:
+        threshold = np.percentile(x, top_percentile)
+        top_mask = x >= threshold
+        y[top_mask] *= 1 + reward_factor
 
     # Normalize to [0,1] range
     y = (y - np.min(y)) / (np.max(y) - np.min(y) + 1e-8)
