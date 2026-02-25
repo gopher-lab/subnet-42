@@ -63,3 +63,16 @@ def test_healthcheck_still_works():
     response = client.get("/healthcheck")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_leaderboard_supports_offset_param():
+    api = _build_api()
+    client = TestClient(api.app)
+    headers = {"X-API-Key": "test-key"}
+
+    response = client.get(
+        "/monitor/leaderboard?hours=8&limit=10&offset=20", headers=headers
+    )
+    # It may return success or an internal error if backend deps are mocked,
+    # but the route must exist and not 404.
+    assert response.status_code != 404

@@ -564,7 +564,11 @@ class ValidatorAPI:
             }
 
     async def monitor_leaderboard(
-        self, hours: int = 24, limit: int = 1000, sort_by: str = "final_score"
+        self,
+        hours: int = 24,
+        limit: int = 1000,
+        offset: int = 0,
+        sort_by: str = "final_score",
     ):
         """
         Get comprehensive leaderboard with score breakdowns for all miners.
@@ -572,7 +576,8 @@ class ValidatorAPI:
 
         Args:
             hours: Hours of telemetry data to analyze (default: 24)
-            limit: Maximum number of miners to return (default: 1000, use 0 for ALL miners)
+            limit: Maximum number of miners to return (default: 1000, use 0 for ALL)
+            offset: Number of miners to skip before returning results (default: 0)
             sort_by: Sort criteria - "final_score", "total_activity", "total_weighted_score" (default: "final_score")
         """
         try:
@@ -581,8 +586,13 @@ class ValidatorAPI:
             import numpy as np
             import time
 
+            safe_hours = max(1, int(hours))
+            safe_limit = max(0, int(limit))
+            safe_offset = max(0, int(offset))
+
             logger.info(
-                f"Generating leaderboard for {hours}h with limit {limit}, sorted by {sort_by}"
+                f"Generating leaderboard for {safe_hours}h with limit {safe_limit}, "
+                f"offset {safe_offset}, sorted by {sort_by}"
             )
 
             # Get telemetry data for scoring
@@ -590,7 +600,7 @@ class ValidatorAPI:
 
             # Filter to last N hours
             current_time = int(time.time())
-            cutoff_time = current_time - (hours * 3600)
+            cutoff_time = current_time - (safe_hours * 3600)
 
             telemetry_data = []
             for data in all_telemetry_data:
@@ -613,7 +623,7 @@ class ValidatorAPI:
             if not telemetry_data:
                 return {
                     "error": "No telemetry data available for the specified time period",
-                    "hours_analyzed": hours,
+                    "hours_analyzed": safe_hours,
                     "leaderboard": [],
                 }
 
@@ -627,7 +637,7 @@ class ValidatorAPI:
             if not delta_data:
                 return {
                     "error": "No delta data available",
-                    "hours_analyzed": hours,
+                    "hours_analyzed": safe_hours,
                     "leaderboard": [],
                 }
 
@@ -739,28 +749,31 @@ class ValidatorAPI:
             else:  # default: final_score
                 leaderboard.sort(key=lambda x: x["final_score"], reverse=True)
 
-            # Handle limit=0 as "return all miners"
-            if limit == 0:
-                returned_leaderboard = leaderboard
-                returned_count = len(leaderboard)
+            # Apply offset + limit paging. limit=0 means "all from offset onward".
+            total_miners = len(leaderboard)
+            if safe_limit == 0:
+                returned_leaderboard = leaderboard[safe_offset:]
+                returned_count = len(returned_leaderboard)
                 limit_description = "ALL"
             else:
-                returned_leaderboard = leaderboard[:limit]
-                returned_count = min(limit, len(leaderboard))
-                limit_description = str(limit)
+                returned_leaderboard = leaderboard[safe_offset : safe_offset + safe_limit]
+                returned_count = len(returned_leaderboard)
+                limit_description = str(safe_limit)
 
-            # Add rankings
+            # Add global rankings (rank reflects full sorted leaderboard, not page index)
             for i, miner in enumerate(returned_leaderboard):
-                miner["rank"] = i + 1
+                miner["rank"] = safe_offset + i + 1
 
             return {
                 "success": True,
-                "hours_analyzed": hours,
+                "hours_analyzed": safe_hours,
                 "cutoff_time": cutoff_time,
                 "analysis_time": current_time,
-                "total_miners": len(leaderboard),
+                "total_miners": total_miners,
                 "returned_miners": returned_count,
                 "limit_applied": limit_description,
+                "offset_applied": safe_offset,
+                "has_more": (safe_offset + returned_count) < total_miners,
                 "sort_criteria": sort_by,
                 "summary": {
                     "active_miners": len(
