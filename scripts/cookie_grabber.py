@@ -56,6 +56,106 @@ POST_LOGIN_COOKIE_WAIT = 15  # Wait up to 15s for session cookies
 POST_LOGIN_COOKIE_POLL_INTERVAL = 1  # Poll every second
 REQUIRED_SESSION_COOKIES = ["auth_token", "ct0"]
 
+# Rate limit tracking
+rate_limit_hits = {}  # Track rate limit hits per account for exponential backoff
+MAX_BACKOFF_SECONDS = 300  # Max 5 minutes between attempts
+
+
+def get_account_backoff(username):
+    """Get current backoff time for an account based on recent rate limit hits."""
+    hits = rate_limit_hits.get(username, 0)
+    if hits == 0:
+        return 0
+    # Exponential backoff: 10s, 20s, 40s, 80s, 160s, 300s (max)
+    backoff = min(10 * (2 ** (hits - 1)), MAX_BACKOFF_SECONDS)
+    return backoff
+
+
+def record_rate_limit_hit(username):
+    """Record a rate limit hit for an account."""
+    rate_limit_hits[username] = rate_limit_hits.get(username, 0) + 1
+    backoff = get_account_backoff(username)
+    logger.warning(
+        f"Rate limit hit for {username}. This is attempt {rate_limit_hits[username]}. "
+        f"Next backoff will be {backoff}s"
+    )
+
+
+def clear_rate_limit_hits(username):
+    """Clear rate limit hits after successful login."""
+    if username in rate_limit_hits:
+        del rate_limit_hits[username]
+
+
+def capture_screenshot(driver, username, reason="failure"):
+    """Capture a screenshot for debugging when something goes wrong."""
+    try:
+        screenshots_dir = os.path.join(OUTPUT_DIR, "screenshots")
+        os.makedirs(screenshots_dir, exist_ok=True)
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{username}_{reason}_{timestamp}.png"
+        filepath = os.path.join(screenshots_dir, filename)
+        
+        driver.save_screenshot(filepath)
+        logger.info(f"Screenshot saved: {filepath}")
+        return filepath
+    except Exception as e:
+        logger.warning(f"Failed to capture screenshot: {str(e)}")
+        return None
+
+
+def is_rate_limited(driver):
+    """Check if X/Twitter is showing rate limit or "too many attempts" messages."""
+    try:
+        rate_limit_indicators = [
+            "rate limit",
+            "too many attempts",
+            "try again later",
+            "unusual activity",
+            "automated behavior",
+            "suspicious activity",
+            "temporarily locked",
+            "account temporarily",
+            "please wait",
+            "slow down",
+            "429",  # HTTP status sometimes shown
+        ]
+        
+        page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+        current_url = driver.current_url.lower()
+        
+        for indicator in rate_limit_indicators:
+            if indicator in page_text or indicator in current_url:
+                logger.warning(f"Rate limit detected: '{indicator}' found")
+                return True
+                
+        # Check for specific error codes or states
+        error_selectors = [
+            '[data-testid="error"]', 
+            '[role="alert"]',
+            '.error-message',
+            '[class*="error"]',
+            '[class*="blocked"]',
+        ]
+        
+        for selector in error_selectors:
+            try:
+                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                for elem in elements:
+                    if elem.is_displayed():
+                        text = elem.text.lower()
+                        if any(ind in text for ind in rate_limit_indicators):
+                            logger.warning(f"Rate limit element found: {text[:100]}")
+                            return True
+            except:
+                pass
+                
+        return False
+    except Exception as e:
+        logger.debug(f"Error checking rate limit status: {str(e)}")
+        return False
+
 
 def get_future_date(days=7, hours=0, minutes=0, seconds=0):
     """
@@ -312,6 +412,33 @@ def kill_orphan_chrome_processes():
         logger.debug(f"Error checking for orphaned processes: {e}")
 
 
+def clear_chromedriver_cache():
+    """Clear undetected_chromedriver cache to force re-download of correct version."""
+    try:
+        import undetected_chromedriver as uc
+        # Get the cache directory used by undetected_chromedriver
+        cache_dir = os.path.expanduser("~/.undetected_chromedriver")
+        if os.path.exists(cache_dir):
+            logger.info(f"Clearing chromedriver cache: {cache_dir}")
+            shutil.rmtree(cache_dir, ignore_errors=True)
+        
+        # Also clear the selenium webdriver cache
+        selenium_cache = os.path.expanduser("~/.wdm")
+        if os.path.exists(selenium_cache):
+            logger.info(f"Clearing selenium webdriver cache: {selenium_cache}")
+            shutil.rmtree(selenium_cache, ignore_errors=True)
+            
+        # Clear Library/Application Support path on macOS
+        mac_cache = os.path.expanduser("~/Library/Application Support/undetected_chromedriver")
+        if os.path.exists(mac_cache):
+            logger.info(f"Clearing macOS chromedriver cache: {mac_cache}")
+            shutil.rmtree(mac_cache, ignore_errors=True)
+            
+        logger.info("Chromedriver cache cleared successfully")
+    except Exception as e:
+        logger.warning(f"Could not clear chromedriver cache: {str(e)}")
+
+
 def clear_profile_cache(profile_dir, clear_heavy_cache=False):
     """Clear profile lock files always; clear heavy caches only when requested."""
     cache_dirs = [
@@ -380,6 +507,19 @@ def setup_driver(username, aggressive_cleanup=False):
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     
+    # CRITICAL: Disable blink features that expose automation
+    # This makes navigator.webdriver return undefined instead of true
+    # Note: excludeSwitches doesn't work with undetected_chromedriver, 
+    # so we rely on the CDP script injection below
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    
+    # Additional anti-detection measures via arguments
+    # These are safer than experimental options with undetected_chromedriver
+    options.add_argument("--disable-automation")
+    options.add_argument("--disable-web-security")
+    options.add_argument("--disable-features=IsolateOrigins,site-per-process")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    
     # Performance and stability improvements
     options.add_argument("--disable-background-networking")
     options.add_argument("--disable-background-timer-throttling")
@@ -438,13 +578,26 @@ def setup_driver(username, aggressive_cleanup=False):
 
     # Prefer a modern, real Chrome UA; CDP override will ensure full hints
     # We'll derive version from driver after launch for consistency
-    try:
-        logger.info("Initializing undetected Chrome driver...")
+    driver = None
+    version_retry_count = 0
+    max_version_retries = 2
+    
+    while version_retry_count < max_version_retries:
         try:
+            logger.info(f"Initializing undetected Chrome driver (attempt {version_retry_count + 1})...")
+            
+            # Force kill any existing Chrome processes before creating new driver
+            kill_orphan_chrome_processes()
+            
             if detected_major:
+                logger.info(f"Requesting ChromeDriver for Chrome version {detected_major}")
                 driver = uc.Chrome(options=options, version_main=detected_major)
             else:
                 driver = uc.Chrome(options=options)
+                
+            logger.info("Successfully initialized undetected Chrome driver")
+            break  # Success - exit the retry loop
+            
         except TypeError as te:
             if "version_main" in str(te):
                 logger.warning(
@@ -452,147 +605,177 @@ def setup_driver(username, aggressive_cleanup=False):
                     "Please upgrade: pip install -U undetected-chromedriver"
                 )
                 driver = uc.Chrome(options=options)
+                break
             else:
                 raise
-        logger.info("Successfully initialized undetected Chrome driver")
+                
+        except WebDriverException as we:
+            error_msg = str(we).lower()
+            
+            # Check for version mismatch error
+            if "only supports chrome version" in error_msg or "session not created" in error_msg:
+                version_retry_count += 1
+                
+                if version_retry_count < max_version_retries:
+                    logger.warning(
+                        f"ChromeDriver version mismatch detected. "
+                        f"Clearing cache and retrying (attempt {version_retry_count + 1}/{max_version_retries})..."
+                    )
+                    
+                    # Clear the chromedriver cache to force re-download
+                    clear_chromedriver_cache()
+                    
+                    # Small delay before retry
+                    time.sleep(2)
+                    
+                    # Continue to next iteration
+                    continue
+                else:
+                    logger.error("ChromeDriver version mismatch persists after clearing cache")
+                    # Try one more time without specifying version_main
+                    try:
+                        logger.info("Trying without version specification...")
+                        driver = uc.Chrome(options=options)
+                        logger.info("Successfully initialized undetected Chrome driver (fallback)")
+                        break
+                    except Exception as fallback_e:
+                        logger.error(f"Fallback initialization also failed: {str(fallback_e)}")
+                        raise
+            else:
+                # Not a version error - re-raise
+                raise
+    
+    if driver is None:
+        raise RuntimeError("Failed to initialize Chrome driver after all retries")
 
-        # Derive browser version to craft consistent Client Hints
-        browser_version = None
-        try:
-            caps = getattr(driver, "capabilities", {}) or {}
-            browser_version = caps.get("browserVersion") or caps.get("version")
-        except Exception:
-            pass
-        if not browser_version:
-            browser_version = "126.0.6478.61"
-        major_version = browser_version.split(".")[0]
-
-        # Compose realistic UA (macOS Sonoma-ish)
-        ua_string = (
-            f"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
-            f"AppleWebKit/537.36 (KHTML, like Gecko) "
-            f"Chrome/{browser_version} Safari/537.36"
+    # CRITICAL: Use CDP to hide navigator.webdriver flag
+    # This is essential to bypass X/Twitter's bot detection
+    try:
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": """
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    
+                    // Also hide other automation indicators
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
+                    
+                    // Hide Chrome's automation extension
+                    window.chrome = {
+                        runtime: {}
+                    };
+                    
+                    // Remove CDC properties that ChromeDriver adds
+                    Object.defineProperty(window, 'cdc_adoQpoasnfa76pfcZLmcfl_Array', {
+                        get: () => undefined
+                    });
+                    Object.defineProperty(window, 'cdc_adoQpoasnfa76pfcZLmcfl_Promise', {
+                        get: () => undefined
+                    });
+                    Object.defineProperty(window, 'cdc_adoQpoasnfa76pfcZLmcfl_Symbol', {
+                        get: () => undefined
+                    });
+                """
+            },
         )
+        logger.info("Successfully injected anti-detection script via CDP")
+    except Exception as e:
+        logger.warning(f"Failed to inject anti-detection script: {str(e)}")
 
-        # Client Hints with brands and fullVersionList
-        brands = [
-            {"brand": "Not.A/Brand", "version": "24"},
-            {"brand": "Chromium", "version": major_version},
-            {"brand": "Google Chrome", "version": major_version},
-        ]
-        full_version_list = [
-            {"brand": "Not.A/Brand", "version": "24.0.0.0"},
-            {"brand": "Chromium", "version": browser_version},
-            {"brand": "Google Chrome", "version": browser_version},
-        ]
-        cpu_arch = platform.machine().lower()
-        if "arm" in cpu_arch or "aarch64" in cpu_arch:
-            client_hint_arch = "arm"
-        else:
-            client_hint_arch = "x86"
+    # Derive browser version to craft consistent Client Hints
+    browser_version = None
+    try:
+        caps = getattr(driver, "capabilities", {}) or {}
+        browser_version = caps.get("browserVersion") or caps.get("version")
+    except Exception:
+        pass
+    if not browser_version:
+        browser_version = "126.0.6478.61"
+    major_version = browser_version.split(".")[0]
 
+    # Compose realistic UA (macOS Sonoma-ish)
+    ua_string = (
+        f"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
+        f"AppleWebKit/537.36 (KHTML, like Gecko) "
+        f"Chrome/{browser_version} Safari/537.36"
+    )
+
+    # Client Hints with brands and fullVersionList
+    brands = [
+        {"brand": "Not.A/Brand", "version": "24"},
+        {"brand": "Chromium", "version": major_version},
+        {"brand": "Google Chrome", "version": major_version},
+    ]
+    full_version_list = [
+        {"brand": "Not.A/Brand", "version": "24.0.0.0"},
+        {"brand": "Chromium", "version": browser_version},
+        {"brand": "Google Chrome", "version": browser_version},
+    ]
+    cpu_arch = platform.machine().lower()
+    if "arm" in cpu_arch or "aarch64" in cpu_arch:
+        client_hint_arch = "arm"
+    else:
+        client_hint_arch = "x86"
+
+    try:
+        driver.execute_cdp_cmd(
+            "Network.setUserAgentOverride",
+            {
+                "userAgent": ua_string,
+                "platform": "macOS",
+                "userAgentMetadata": {
+                    "brands": brands,
+                    "fullVersionList": full_version_list,
+                    "platform": "macOS",
+                    "platformVersion": "14.5.0",
+                    "architecture": client_hint_arch,
+                    "model": "",
+                    "mobile": False,
+                    "bitness": "64",
+                },
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to set UA override via CDP: {str(e)}")
+
+    # Timezone override only when explicitly provided to avoid proxy/locale mismatch.
+    timezone_id = os.environ.get("TIMEZONE_ID")
+    if timezone_id:
         try:
             driver.execute_cdp_cmd(
-                "Network.setUserAgentOverride",
-                {
-                    "userAgent": ua_string,
-                    "platform": "macOS",
-                    "userAgentMetadata": {
-                        "brands": brands,
-                        "fullVersionList": full_version_list,
-                        "platform": "macOS",
-                        "platformVersion": "14.5.0",
-                        "architecture": client_hint_arch,
-                        "model": "",
-                        "mobile": False,
-                        "bitness": "64",
-                    },
-                },
+                "Emulation.setTimezoneOverride", {"timezoneId": timezone_id}
             )
         except Exception as e:
-            logger.warning(f"Failed to set UA override via CDP: {str(e)}")
+            logger.warning(f"Failed to set timezone override: {str(e)}")
 
-        # Timezone override only when explicitly provided to avoid proxy/locale mismatch.
-        timezone_id = os.environ.get("TIMEZONE_ID")
-        if timezone_id:
+    # Geolocation override only when explicitly provided to avoid mismatched signals.
+    geo_lat = os.environ.get("GEO_LAT")
+    geo_lon = os.environ.get("GEO_LON")
+    if geo_lat and geo_lon:
+        try:
+            lat = float(geo_lat)
+            lon = float(geo_lon)
+            acc = float(os.environ.get("GEO_ACC", "100"))
+            # Grant permission for Twitter origin
             try:
                 driver.execute_cdp_cmd(
-                    "Emulation.setTimezoneOverride", {"timezoneId": timezone_id}
+                    "Browser.grantPermissions",
+                    {"permissions": ["geolocation"], "origin": "https://x.com"},
                 )
-            except Exception as e:
-                logger.warning(f"Failed to set timezone override: {str(e)}")
+            except Exception:
+                pass
+            driver.execute_cdp_cmd(
+                "Emulation.setGeolocationOverride",
+                {"latitude": lat, "longitude": lon, "accuracy": acc},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to set geolocation override: {str(e)}")
 
-        # Geolocation override only when explicitly provided to avoid mismatched signals.
-        geo_lat = os.environ.get("GEO_LAT")
-        geo_lon = os.environ.get("GEO_LON")
-        if geo_lat and geo_lon:
-            try:
-                lat = float(geo_lat)
-                lon = float(geo_lon)
-                acc = float(os.environ.get("GEO_ACC", "100"))
-                # Grant permission for Twitter origin
-                try:
-                    driver.execute_cdp_cmd(
-                        "Browser.grantPermissions",
-                        {"permissions": ["geolocation"], "origin": "https://x.com"},
-                    )
-                except Exception:
-                    pass
-                driver.execute_cdp_cmd(
-                    "Emulation.setGeolocationOverride",
-                    {"latitude": lat, "longitude": lon, "accuracy": acc},
-                )
-            except Exception as e:
-                logger.warning(f"Failed to set geolocation override: {str(e)}")
-
-        return driver
-    except Exception as e:
-        logger.error(f"Error creating undetected Chrome driver: {str(e)}")
-
-        # If the error indicates a version mismatch, parse and retry once with that version
-        try:
-            msg = str(e)
-            m_current = re.search(r"Current browser version is\s+(\d+)", msg)
-            forced_major = int(m_current.group(1)) if m_current else None
-            if not forced_major:
-                m_supports = re.search(r"only supports Chrome version\s+(\d+)", msg)
-                forced_major = int(m_supports.group(1)) if m_supports else None
-
-            if forced_major:
-                logger.info(f"Retrying with UC driver for Chrome {forced_major}")
-                minimal_options = uc.ChromeOptions()
-                minimal_options.add_argument("--no-sandbox")
-                minimal_options.add_argument("--disable-dev-shm-usage")
-                minimal_options.add_argument(f"--user-data-dir={profile_dir}")
-                if chrome_binary:
-                    minimal_options.binary_location = chrome_binary
-                try:
-                    return uc.Chrome(options=minimal_options, version_main=forced_major)
-                except TypeError as te:
-                    if "version_main" in str(te):
-                        logger.warning(
-                            "Your undetected_chromedriver is outdated and lacks version_main. "
-                            "Please upgrade: pip install -U undetected-chromedriver"
-                        )
-                        return uc.Chrome(options=minimal_options)
-                    raise
-
-        except Exception as retry_err:
-            logger.warning(f"Retry after parsing version failed: {str(retry_err)}")
-
-        # Last-resort minimal fallback
-        try:
-            logger.info("Trying fallback undetected Chrome with minimal options...")
-            minimal_options = uc.ChromeOptions()
-            minimal_options.add_argument("--no-sandbox")
-            minimal_options.add_argument("--disable-dev-shm-usage")
-            minimal_options.add_argument(f"--user-data-dir={profile_dir}")
-            if chrome_binary:
-                minimal_options.binary_location = chrome_binary
-            return uc.Chrome(options=minimal_options)
-        except Exception as e2:
-            logger.error(f"Final driver creation attempt failed: {str(e2)}")
-            raise
+    return driver
 
 
 def human_like_typing(element, text):
@@ -864,6 +1047,60 @@ def needs_verification(driver):
         return False
 
 
+def is_account_locked_or_suspended(driver):
+    """Check if the account is locked, suspended, or disabled."""
+    try:
+        lockout_indicators = [
+            "account suspended",
+            "account locked",
+            "account disabled",
+            "permanently suspended",
+            "temporarily locked",
+            "unusual activity detected",
+            "automated behavior",
+            "captcha",
+            "prove you're not a robot",
+            "verify you're human",
+            "phone verification required",
+            "additional verification required",
+            "security check",
+        ]
+        
+        page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+        current_url = driver.current_url.lower()
+        
+        for indicator in lockout_indicators:
+            if indicator in page_text or indicator in current_url:
+                logger.error(f"Account appears locked/suspended: '{indicator}' detected")
+                return True
+                
+        # Check for specific locked account elements
+        lockout_selectors = [
+            '[data-testid="lockedAccount"]',
+            '[data-testid="suspendedAccount"]',
+            '[class*="suspended"]',
+            '[class*="locked"]',
+            '[class*="captcha"]',
+            'iframe[src*="captcha"]',
+            'iframe[src*="recaptcha"]',
+        ]
+        
+        for selector in lockout_selectors:
+            try:
+                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                for elem in elements:
+                    if elem.is_displayed():
+                        logger.error(f"Lockout/suspension element found: {selector}")
+                        return True
+            except:
+                pass
+        
+        return False
+    except Exception as e:
+        logger.debug(f"Error checking account lockout status: {str(e)}")
+        return False
+
+
 def extract_email_from_password(password):
     """Extract email from password assuming format 'himynameis<name>'."""
     # Get base email from environment variable - required
@@ -990,25 +1227,124 @@ def generate_cookies_json(cookie_values, domain="x.com"):
     return cookies
 
 
-def wait_for_login_page_ready(driver, max_wait=30):
-    """Wait until login page controls are interactive."""
+def is_page_stuck_loading(driver):
+    """Detect if the page is stuck showing a loading spinner."""
+    try:
+        # Check for loading spinners or progress indicators
+        spinner_selectors = [
+            'svg[style*="animation"]',  # Animated SVG spinners
+            '[role="progressbar"]',
+            '.loading',
+            '[class*="spinner"]',
+            '[class*="loading"]',
+            # X/Twitter specific selectors
+            'svg circle[cx]',  # Common spinner pattern
+            '[data-testid="loading"]',
+        ]
+        
+        for selector in spinner_selectors:
+            try:
+                spinners = driver.find_elements(By.CSS_SELECTOR, selector)
+                for spinner in spinners:
+                    if spinner.is_displayed():
+                        # Check if it's actually visible in viewport
+                        try:
+                            rect = driver.execute_script(
+                                "return arguments[0].getBoundingClientRect();", spinner
+                            )
+                            if rect["width"] > 20 and rect["height"] > 20:
+                                return True
+                        except:
+                            pass
+            except:
+                pass
+        
+        # Check for "Loading..." text or similar
+        loading_texts = ["Loading", "loading", "Please wait", "please wait"]
+        for text in loading_texts:
+            try:
+                elements = driver.find_elements(
+                    By.XPATH, f"//*[contains(text(), '{text}')]"
+                )
+                if any(e.is_displayed() for e in elements):
+                    return True
+            except:
+                pass
+        
+        return False
+    except Exception as e:
+        logger.debug(f"Error checking for stuck loading: {str(e)}")
+        return False
+
+
+def wait_for_login_page_ready(driver, max_wait=30, refresh_on_stuck=True):
+    """Wait until login page controls are interactive.
+    
+    Args:
+        driver: The Chrome driver instance
+        max_wait: Maximum time to wait in seconds
+        refresh_on_stuck: If True, refresh the page if it appears stuck loading
+    """
     wait_start = time.time()
+    stuck_check_interval = 5  # Check for stuck state every 5 seconds
+    last_stuck_check = wait_start
+    is_stuck = False
+    js_ready_checks = 0  # Track how many times we've seen JS ready
+    
     while time.time() - wait_start < max_wait:
         try:
             ready_state = driver.execute_script("return document.readyState")
+            
+            # Check for stuck loading state periodically
+            if refresh_on_stuck and time.time() - last_stuck_check >= stuck_check_interval:
+                if is_page_stuck_loading(driver):
+                    logger.warning("Page appears stuck on loading spinner, refreshing...")
+                    is_stuck = True
+                    break  # Exit loop to trigger refresh
+                last_stuck_check = time.time()
+            
+            # Check for login form elements
             login_elements = driver.find_elements(
                 By.CSS_SELECTOR,
                 'input[name="text"], div[role="button"], form[data-testid="LoginForm"]',
             )
+            
+            # Also check if React/Vue apps have mounted by looking for dynamic content
+            js_complete = driver.execute_script("""
+                // Check if any JS frameworks have rendered content
+                var reactRoot = document.querySelector('[data-reactroot]');
+                var vueApp = document.querySelector('[data-v-app]') || document.querySelector('#app');
+                var mainContent = document.querySelector('main') || document.querySelector('[role="main"]');
+                var bodyContent = document.body && document.body.innerHTML.length > 500;
+                
+                // Return true if we have meaningful content
+                return !!(reactRoot || vueApp || mainContent || bodyContent);
+            """)
+            
             if ready_state == "complete" and any(
                 elem.is_displayed() for elem in login_elements if login_elements
             ):
-                return True
+                # Require JS to be ready multiple times to avoid false positives
+                if js_complete:
+                    js_ready_checks += 1
+                    if js_ready_checks >= 2:  # Must be ready 2 consecutive checks
+                        if is_stuck:
+                            logger.info("Page recovered from stuck state and is now ready")
+                        logger.info(f"Login page ready after {(time.time() - wait_start):.1f}s")
+                        return True
+                else:
+                    js_ready_checks = 0  # Reset if JS not ready
+                
         except WebDriverException as e:
             if "no such window" in str(e).lower() or "no such session" in str(e).lower():
                 raise
             logger.warning(f"Error checking page load: {str(e)}")
         time.sleep(0.5)
+    
+    # If we detected stuck state, return False so caller can refresh
+    if is_stuck:
+        return False
+    
     return False
 
 
@@ -1039,6 +1375,43 @@ def human_like_post_action_pause():
     time.sleep(random.uniform(0.35, 0.9))
 
 
+def safe_navigate(driver, url, max_retries=3, retry_delay=2):
+    """Navigate to URL with retry logic for transient network errors."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            driver.get(url)
+            return True
+        except WebDriverException as e:
+            error_str = str(e).lower()
+            
+            # Check for network-related errors that warrant retry
+            network_errors = [
+                "net::err_name_not_resolved",
+                "net::err_internet_disconnected", 
+                "net::err_connection_reset",
+                "net::err_connection_refused",
+                "net::err_connection_timed_out",
+                "net::err_timed_out",
+                "dns",
+                "timeout",
+                "unable to connect",
+            ]
+            
+            is_network_error = any(err in error_str for err in network_errors)
+            
+            if is_network_error and attempt < max_retries:
+                logger.warning(
+                    f"Network error on attempt {attempt}/{max_retries}: {str(e)[:100]}. "
+                    f"Retrying in {retry_delay}s..."
+                )
+                time.sleep(retry_delay * attempt)  # Increasing backoff
+            else:
+                # Non-network error or last attempt - re-raise
+                raise
+    
+    return False
+
+
 def process_account_state_machine(driver, username, password):
     """Process an account using a state machine approach with continuous polling."""
     logger.info(f"==========================================")
@@ -1058,20 +1431,115 @@ def process_account_state_machine(driver, username, password):
         nav_start = time.time()
         for nav_attempt in range(1, 4):
             attempt_start = time.time()
-            driver.get(TWITTER_LOGIN_URL)
-            if wait_for_login_page_ready(driver, max_wait=30):
+            
+            # Strategy: Try different entry points to bypass bot detection
+            if nav_attempt == 1:
+                # Attempt 1: Direct login URL
+                logger.info("Attempt 1: Navigating directly to login URL")
+                safe_navigate(driver, TWITTER_LOGIN_URL, max_retries=3)
+            elif nav_attempt == 2:
+                # Attempt 2: Visit home page first, then click login
+                logger.info("Attempt 2: Visiting home page first, then navigating to login")
+                try:
+                    safe_navigate(driver, "https://x.com", max_retries=3)
+                    time.sleep(3)  # Let home page JS execute
+                    
+                    # Look for and click login button on home page
+                    login_buttons = driver.find_elements(
+                        By.CSS_SELECTOR, 
+                        'a[href="/login"], a[href="/i/flow/login"], [data-testid="loginButton"]'
+                    )
+                    if login_buttons:
+                        for btn in login_buttons:
+                            if btn.is_displayed():
+                                logger.info("Found login button on home page, clicking...")
+                                btn.click()
+                                time.sleep(2)
+                                break
+                    else:
+                        # No login button found, navigate directly
+                        logger.info("No login button found, navigating to login URL")
+                        safe_navigate(driver, TWITTER_LOGIN_URL, max_retries=3)
+                except Exception as e:
+                    logger.warning(f"Home page approach failed: {str(e)}, trying direct URL")
+                    safe_navigate(driver, TWITTER_LOGIN_URL, max_retries=3)
+            else:
+                # Attempt 3: Try with a different user agent string
+                logger.info("Attempt 3: Trying alternative navigation approach")
+                safe_navigate(driver, TWITTER_LOGIN_URL, max_retries=3)
+            
+            # Wait for page with stuck-detection
+            if wait_for_login_page_ready(driver, max_wait=30, refresh_on_stuck=True):
                 logger.info(
                     f"Login page loaded successfully (attempt {nav_attempt}, "
                     f"{time.time() - attempt_start:.1f}s)"
                 )
                 nav_ready = True
                 break
+            
+            # If we got here, page may be stuck or not ready - try refresh
             logger.warning(
-                f"Login page readiness timed out on attempt {nav_attempt} "
-                f"({time.time() - attempt_start:.1f}s)"
+                f"Login page not ready on attempt {nav_attempt} "
+                f"({time.time() - attempt_start:.1f}s), refreshing..."
             )
+            
+            # Try refreshing the page before giving up on this attempt
             if nav_attempt < 3:
+                # CRITICAL: If we detected stuck spinner, the profile may be poisoned
+                # Clear it completely and restart browser with fresh profile
+                if is_page_stuck_loading(driver):
+                    logger.warning(
+                        "Detected stuck loading spinner - profile may be poisoned by bot detection. "
+                        "Clearing profile and restarting browser..."
+                    )
+                    try:
+                        # Close current browser
+                        driver.quit()
+                    except:
+                        pass
+                    
+                    # Clear the entire profile directory
+                    try:
+                        profile_dir = os.path.join(OUTPUT_DIR, "profiles", username)
+                        if os.path.exists(profile_dir):
+                            logger.info(f"Removing poisoned profile: {profile_dir}")
+                            shutil.rmtree(profile_dir)
+                            logger.info("Profile cleared successfully")
+                    except Exception as clear_err:
+                        logger.warning(f"Could not clear profile: {str(clear_err)}")
+                    
+                    # Restart browser with fresh profile
+                    try:
+                        logger.info("Restarting browser with fresh profile...")
+                        driver = setup_driver(username, aggressive_cleanup=True)
+                        logger.info("Browser restarted successfully")
+                        # Don't increment nav_attempt - try again with fresh profile
+                        continue
+                    except Exception as restart_err:
+                        logger.error(f"Failed to restart browser: {str(restart_err)}")
+                        # Fall through to normal refresh attempt
+                
+                # Normal refresh attempt
+                try:
+                    driver.refresh()
+                    # Wait a bit after refresh
+                    time.sleep(random.uniform(2.0, 3.5))
+                    
+                    # Check if refresh helped
+                    if wait_for_login_page_ready(driver, max_wait=20, refresh_on_stuck=False):
+                        logger.info(
+                            f"Login page ready after refresh (attempt {nav_attempt})"
+                        )
+                        nav_ready = True
+                        break
+                except WebDriverException as e:
+                    if "no such window" in str(e).lower() or "no such session" in str(e).lower():
+                        raise
+                    logger.warning(f"Refresh failed: {str(e)}")
+                
+                # Brief pause before next attempt
                 time.sleep(random.uniform(1.0, 2.5))
+        
         logger.info(f"Login page stage duration: {time.time() - nav_start:.1f}s")
         if not nav_ready:
             logger.warning("Proceeding despite login page readiness timeouts")
@@ -1096,6 +1564,9 @@ def process_account_state_machine(driver, username, password):
 
     # State machine loop
     loop_count = 0
+    last_progress_time = start_time
+    last_progress_url = ""
+    
     while time.time() - start_time < WAITING_TIME:
         loop_count += 1
         try:
@@ -1104,6 +1575,29 @@ def process_account_state_machine(driver, username, password):
             # Log every 10 iterations to show we're still alive
             if loop_count % 10 == 0:
                 logger.info(f"State machine loop iteration {loop_count}, URL: {current_url}")
+            
+            # Detect if we're stuck on a loading spinner during the flow
+            if loop_count % 20 == 0 and is_page_stuck_loading(driver):
+                logger.warning("Detected stuck loading spinner during login flow")
+                
+                # Check if we've made progress recently
+                time_since_progress = time.time() - last_progress_time
+                url_changed = current_url != last_progress_url
+                
+                if time_since_progress > 45 and not url_changed:
+                    logger.warning(
+                        f"No progress for {time_since_progress:.0f}s, attempting recovery refresh"
+                    )
+                    try:
+                        driver.refresh()
+                        time.sleep(3)
+                        last_progress_time = time.time()  # Reset timer after refresh
+                    except WebDriverException as e:
+                        if "no such window" in str(e).lower() or "no such session" in str(e).lower():
+                            raise
+                        logger.warning(f"Recovery refresh failed: {str(e)}")
+                else:
+                    logger.info(f"Progress check: {time_since_progress:.0f}s since last action, URL changed: {url_changed}")
 
             # Check if already logged in
             if is_logged_in(driver):
@@ -1111,11 +1605,43 @@ def process_account_state_machine(driver, username, password):
                 login_successful = True
                 break
 
+            # Check for rate limiting - if detected, we'll need to back off
+            if loop_count % 15 == 0 and is_rate_limited(driver):
+                record_rate_limit_hit(username)
+                backoff = get_account_backoff(username)
+                logger.warning(f"Rate limited. Backing off for {backoff}s...")
+                
+                # Capture screenshot for debugging
+                capture_screenshot(driver, username, "rate_limited")
+                
+                # Wait out the backoff period
+                time.sleep(backoff)
+                
+                # Try refreshing after backoff
+                try:
+                    driver.refresh()
+                    time.sleep(3)
+                    last_progress_time = time.time()
+                except WebDriverException as e:
+                    if "no such window" in str(e).lower() or "no such session" in str(e).lower():
+                        raise
+                    logger.warning(f"Post-backoff refresh failed: {str(e)}")
+                continue
+
+            # Check for account lockout/suspension (permanent failure for this account)
+            if loop_count % 25 == 0 and is_account_locked_or_suspended(driver):
+                logger.error(f"Account {username} appears to be locked or suspended. Aborting.")
+                capture_screenshot(driver, username, "account_locked")
+                # Don't retry this account - it's a permanent failure
+                return False
+
             # Check if URL changed since last check
             if current_url != last_url:
                 logger.info(f"URL changed to: {current_url}")
                 last_url = current_url
                 last_action_time = time.time()  # Reset the idle timer when URL changes
+                last_progress_time = time.time()  # Track progress for stuck detection
+                last_progress_url = current_url
 
             # Check if we need verification
             if needs_verification(driver):
@@ -1158,6 +1684,7 @@ def process_account_state_machine(driver, username, password):
                                 driver, before_click_url, timeout=CLICK_WAIT
                             )
                             last_action_time = time.time()
+                            last_progress_time = time.time()
                             continue
 
                 # Check specifically for the "Help us keep your account safe" screen
@@ -1211,6 +1738,7 @@ def process_account_state_machine(driver, username, password):
                                                 timeout=CLICK_WAIT,
                                             )
                                             last_action_time = time.time()
+                                            last_progress_time = time.time()
                                             break
                                 else:
                                     # If can't find specific Next button, try generic button click
@@ -1221,6 +1749,7 @@ def process_account_state_machine(driver, username, password):
                                         driver, before_click_url, timeout=CLICK_WAIT
                                     )
                                     last_action_time = time.time()
+                                    last_progress_time = time.time()
                                 continue
 
                 # Check for email input (older style)
@@ -1238,9 +1767,10 @@ def process_account_state_machine(driver, username, password):
                         driver, before_click_url, timeout=CLICK_WAIT
                     )
                     last_action_time = time.time()
+                    last_progress_time = time.time()
                     continue
 
-                # Check for phone input (we'll let the user handle this)
+            # Check for phone input (we'll let the user handle this)
                 phone_inputs = driver.find_elements(
                     By.CSS_SELECTOR, 'input[type="tel"], input[placeholder*="phone" i]'
                 )
@@ -1273,6 +1803,7 @@ def process_account_state_machine(driver, username, password):
                     driver, before_click_url, timeout=CLICK_WAIT
                 )
                 last_action_time = time.time()
+                last_progress_time = time.time()
                 continue
 
             # Password field
@@ -1290,6 +1821,7 @@ def process_account_state_machine(driver, username, password):
                     driver, before_click_url, timeout=CLICK_WAIT
                 )
                 last_action_time = time.time()
+                last_progress_time = time.time()
                 continue
 
             # If we haven't taken any action for a while, try clicking a button
@@ -1298,6 +1830,7 @@ def process_account_state_machine(driver, username, password):
                     logger.info("Clicked a button after 30 seconds of inactivity")
                     human_like_post_action_pause()
                     last_action_time = time.time()
+                    last_progress_time = time.time()
                     continue
 
             # If we're not logged in and can't find any inputs, wait
@@ -1363,6 +1896,10 @@ def process_account_state_machine(driver, username, password):
             logger.info(
                 f"Cookie readiness stage duration: {time.time() - cookie_wait_start:.1f}s"
             )
+            
+            # Clear rate limit hits on successful login
+            clear_rate_limit_hits(username)
+            
             domain = "x.com"
             cookies_json = generate_cookies_json(cookie_values, domain)
 
@@ -1390,6 +1927,13 @@ def process_account_state_machine(driver, username, password):
             return False
     else:
         logger.error(f"Failed to login for {username} within the time limit")
+        
+        # Capture screenshot for debugging the failure
+        try:
+            capture_screenshot(driver, username, "login_failed")
+        except Exception as e:
+            logger.debug(f"Could not capture failure screenshot: {str(e)}")
+        
         return False
 
 
@@ -1445,10 +1989,35 @@ def main():
             f"Processing account {current_account_index+1}/{len(account_pairs)}: {username}"
         )
 
+        # Check if we should use fresh profiles (clears any poisoned profile data)
+        use_fresh_profiles = os.environ.get("COOKIE_GRABBER_FRESH_PROFILES", "false").lower() == "true"
+        if use_fresh_profiles:
+            profile_dir = os.path.join(OUTPUT_DIR, "profiles", username)
+            if os.path.exists(profile_dir):
+                logger.info(f"FRESH_PROFILES enabled: Clearing existing profile for {username}")
+                try:
+                    shutil.rmtree(profile_dir)
+                    logger.info("Profile cleared successfully")
+                except Exception as e:
+                    logger.warning(f"Could not clear profile: {str(e)}")
+
         # Process account with potential window closing for VPN switching
         success = False
         while retry_count < max_retries and not success:
             try:
+                # Apply backoff delay if this is a retry (not the first attempt)
+                if retry_count > 0:
+                    backoff = get_account_backoff(username)
+                    # Add some jitter to avoid thundering herd
+                    jitter = random.uniform(0, 5)
+                    total_delay = backoff + jitter
+                    if total_delay > 0:
+                        logger.info(
+                            f"Waiting {total_delay:.1f}s before retry {retry_count} "
+                            f"({backoff}s backoff + {jitter:.1f}s jitter)"
+                        )
+                        time.sleep(total_delay)
+                
                 # Initialize a new driver for each retry
                 if driver is not None:
                     try:
