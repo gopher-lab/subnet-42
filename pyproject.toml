@@ -32,7 +32,10 @@ dev = [
     "pytest-asyncio==0.25.3"
 ]
 
+[tool.setuptools.packages.find]
+include = ["validator*", "miner*", "interfaces*", "neurons*", "db*"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-python_files = ["test_*.py"] 
+python_files = ["test_*.py"]
