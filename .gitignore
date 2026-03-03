@@ -6,23 +6,16 @@ userstories.md
 /bittensor
 /protocol/__pycache__
 /neurons/__pycache__
-.env
 nodes.json
 *.encrypted
 /tests/__pycache__
 /protocol/x/__pycache__
+/protocol/data_processing/__pycache__
 *.pyc
 data/*
 .DS_Store
-/protocol/data_processing/__pycache__
-/protocol/data_processing/__pycache__
-*.pyc
 notebooks/.DS_Store
 .conda
-
-config.ovpn
-auth.txt
-cookies/
 
 .env*
 !.env.example
@@ -30,5 +23,4 @@ cookies/
 key.pem
 
 *.conf
-
-kubeconfig*.yaml
+*.egg-info

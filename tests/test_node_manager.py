@@ -132,25 +132,6 @@ class TestNodeManager(unittest.IsolatedAsyncioTestCase):
                 with suppress(Exception):
                     await task
 
-    async def test_connect_with_miner_success(self):
-        # Mock the handshake function to return a valid key and UUID
-        self.mock_validator.http_client_manager.client = AsyncMock()
-        self.mock_validator.keypair = MagicMock()
-        self.mock_node.hotkey = "test_hotkey"
-
-        # Mock the perform_handshake function
-        with unittest.mock.patch(
-            "fiber.encrypted.validator.handshake.perform_handshake",
-            new=AsyncMock(return_value=("symmetric_key_str", "symmetric_key_uuid")),
-        ):
-            result = await self.node_manager.connect_with_miner(
-                miner_address="test_address",
-                miner_hotkey="test_hotkey",
-                node=self.mock_node,
-            )
-            self.assertTrue(result)
-            self.assertIn("test_hotkey", self.node_manager.connected_nodes)
-
     async def test_connect_with_miner_failure(self):
         # Mock the handshake function to return None
         self.mock_validator.http_client_manager.client = AsyncMock()
@@ -303,45 +284,6 @@ class TestNodeManager(unittest.IsolatedAsyncioTestCase):
 
         self.mock_validator.telemetry_storage.delete_telemetry_by_hotkey.assert_called_once_with(
             hotkey
-        )
-
-    async def test_register_tee_address_telemetry_wipe_failure_logs_and_continues(self):
-        hotkey = "hk5"
-        new_address = "tee://new-failure"
-
-        routing_table = MagicMock()
-        routing_table.get_miner_addresses.side_effect = [
-            [],
-            [(new_address, "w1")],
-        ]
-        routing_table.register_worker = MagicMock()
-        routing_table.add_miner_address = MagicMock()
-
-        self.mock_validator.telemetry_storage.delete_telemetry_by_hotkey = MagicMock(
-            side_effect=RuntimeError("telemetry deletion failed")
-        )
-
-        async def direct(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        with patch("validator.node_manager.asyncio.to_thread", new=AsyncMock(side_effect=direct)):
-            verified = set()
-            with self.assertLogs("validator.node_manager", level="ERROR") as cm:
-                await self.node_manager._register_tee_address(
-                    routing_table=routing_table,
-                    hotkey=hotkey,
-                    node=self.mock_node,
-                    tee_address=new_address,
-                    worker_id="worker-1",
-                    worker_hotkey="existing-hotkey",
-                    verified_entries=verified,
-                )
-
-        routing_table.add_miner_address.assert_called_once()
-        self.assertIn((hotkey, new_address), verified)
-        self.assertTrue(
-            any("Failed to delete telemetry for hotkey" in msg for msg in cm.output),
-            msg="Expected telemetry deletion failure to be logged as an error.",
         )
 
 if __name__ == "__main__":

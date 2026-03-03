@@ -261,7 +261,11 @@ class WeightsManager:
             hotkey = node_data.hotkey
             all_hotkeys.append((node_data.node_id, hotkey))
 
-        print(f"all  hotkeys: {all_hotkeys}")
+        logger.debug(f"All hotkeys: {all_hotkeys}")
+
+        # Reuse the PlatformManager instance from __init__
+        all_raw_fields = self.platform_manager.get_all_raw_field_names()
+
         # Process hotkeys with telemetry data
         processed_hotkeys = set()
         for hotkey, telemetry_list in telemetry_by_hotkey.items():
@@ -272,21 +276,19 @@ class WeightsManager:
                     key=lambda x: self._convert_timestamp_to_int(x.timestamp),
                 )
 
-                # Split telemetry into chunks based on worker restarts
-                # Use twitter_returned_tweets as the restart indicator (legacy compatibility)
+                # Split telemetry into chunks based on worker restarts.
+                # Use boot_time as the definitive restart indicator (set once at worker startup).
+                # Note: Requires tee-worker versions that report boot_time. Workers with boot_time=0
+                # will not have restart detection and may be undercounted if they restart mid-window.
                 chunks = []
                 chunk_start = 0
 
                 for i in range(1, len(sorted_telemetry)):
-                    # Check for restart by looking at twitter_returned_tweets decrease
-                    current_tweets = sorted_telemetry[i].get_stat_value(
-                        "twitter_returned_tweets", 0
-                    )
-                    prev_tweets = sorted_telemetry[i - 1].get_stat_value(
-                        "twitter_returned_tweets", 0
-                    )
+                    current_boot_time = sorted_telemetry[i].boot_time
+                    prev_boot_time = sorted_telemetry[i - 1].boot_time
 
-                    if current_tweets < prev_tweets:
+                    # A different boot_time indicates a restart
+                    if current_boot_time != prev_boot_time and current_boot_time > 0:
                         # Worker restart detected, end current chunk
                         chunks.append(
                             (chunk_start, i - 1)
@@ -294,7 +296,7 @@ class WeightsManager:
                         chunk_start = i  # Start new chunk at current record
                         logger.debug(
                             f"Worker restart detected for {hotkey} at timestamp "
-                            f"{sorted_telemetry[i].timestamp}, creating new chunk"
+                            f"{sorted_telemetry[i].timestamp} (boot_time changed: {prev_boot_time} -> {current_boot_time}), creating new chunk"
                         )
 
                 # Add the final chunk
@@ -303,10 +305,7 @@ class WeightsManager:
                 logger.debug(f"Created {len(chunks)} chunks for {hotkey}: {chunks}")
 
                 # Calculate deltas for each chunk and sum them up dynamically
-                from validator.platform_config import PlatformManager
-
-                platform_manager = PlatformManager()
-                all_raw_fields = platform_manager.get_all_raw_field_names()
+                # (PlatformManager already imported above for restart detection)
 
                 # Initialize dynamic delta totals
                 total_deltas = {}
