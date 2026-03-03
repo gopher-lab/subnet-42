@@ -88,7 +88,6 @@ services:
       - /dev/sgx_enclave
       - /dev/sgx_provision
     volumes:
-      - cookies-volume:/home/masa
       - ./.env:/home/masa/.env
     depends_on:
       vpn:
@@ -134,64 +133,7 @@ services:
         mode: "non-blocking"
         max-buffer-size: "4m"
 
-  cookies-generator:
-    profiles: ["cookies"]
-    image: cookie-generator:latest
-    pull_policy: never
-    build:
-      context: .
-      dockerfile: Dockerfile.cookies.generator
-    volumes:
-      - ./.env:/app/.env
-      - ./cookies:/app/cookies
-    environment:
-      - PYTHONUNBUFFERED=1
-      - ENABLE_VNC=true
-      - RUNNING_IN_DOCKER=true
-    restart: "no"
-    env_file: .env
-    logging:
-      driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
-        compress: "true"
-        mode: "non-blocking"
-        max-buffer-size: "4m"
-
-  cookies-updater-docker:
-    profiles: ["cookies"]
-    image: cookies-updater-docker:latest
-    pull_policy: never
-    build:
-      context: .
-      dockerfile: Dockerfile.cookies.updater.docker
-    volumes:
-      - ./.env:/app/.env
-      - ./cookies:/app/cookies
-      - ./key.pem:/app/key.pem:ro
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      - COOKIES_REMOTE_HOSTS=${COOKIES_REMOTE_HOSTS:-localhost}
-      - COOKIES_REMOTE_USER=${COOKIES_REMOTE_USER:-azureuser}
-      - COOKIES_REMOTE_DIR=${COOKIES_REMOTE_DIR:-/tmp/cookies-upload}
-      - PYTHONUNBUFFERED=1
-    restart: "no"
-    env_file: .env
-    logging:
-      driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
-        compress: "true"
-        mode: "non-blocking"
-        max-buffer-size: "4m"
-    depends_on:
-      cookies-generator:
-        condition: service_completed_successfully
-
-  cookies-updater-kubernetes:
-    profiles: ["cookies"]
+  cookies:
     image: cookies-updater-kubernetes:latest
     pull_policy: never
     build:
@@ -199,7 +141,7 @@ services:
       dockerfile: Dockerfile.cookies.updater.kubernetes
     volumes:
       - ./.env:/app/.env
-      - ./cookies:/app/cookies
+      - ~/Downloads/cookie-monster:/app/cookies
       - ./kubeconfig.yaml:/app/kubeconfig.yaml:ro
     environment:
       - DEPLOYMENTS=${DEPLOYMENTS}
@@ -215,9 +157,6 @@ services:
         compress: "true"
         mode: "non-blocking"
         max-buffer-size: "4m"
-    depends_on:
-      cookies-generator:
-        condition: service_completed_successfully
 
   watchtower:
     profiles:
@@ -228,5 +167,3 @@ services:
     restart: unless-stopped
     command: --interval 7200 --cleanup
 
-volumes:
-  cookies-volume:

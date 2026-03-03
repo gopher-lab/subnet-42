@@ -68,6 +68,8 @@ class PlatformManager:
                 metrics=[
                     "scrapes",
                     "tweets",
+                    "profiles",
+                    "other",
                     "errors",
                     "auth_errors",
                     "ratelimit_errors",
@@ -78,6 +80,8 @@ class PlatformManager:
                     # Map raw telemetry field names to clean platform metric names
                     "twitter_scrapes": "scrapes",
                     "twitter_returned_tweets": "tweets",
+                    "twitter_returned_profiles": "profiles",
+                    "twitter_returned_other": "other",
                     "twitter_errors": "errors",
                     "twitter_auth_errors": "auth_errors",
                     "twitter_ratelimit_errors": "ratelimit_errors",
@@ -112,26 +116,28 @@ class PlatformManager:
             "tiktok-search": PlatformConfig(
                 name="tiktok-search",
                 emission_weight=0.05,
-                metrics=["queries", "videos", "errors"],
-                error_metrics=["errors"],
+                metrics=["queries", "videos", "errors", "auth_errors"],
+                error_metrics=["errors", "auth_errors"],
                 success_metrics=["videos"],
                 field_mappings={
                     # Map raw telemetry field names to clean platform metric names
                     "tiktok_queries": "queries",
                     "tiktok_returned_videos": "videos",
                     "tiktok_errors": "errors",
+                    "tiktok_auth_errors": "auth_errors",
                 },
             ),
             "web": PlatformConfig(
                 name="web",
                 emission_weight=0.05,
-                metrics=["queries", "pages", "errors"],
+                metrics=["queries", "pages", "scraped_pages", "errors"],
                 error_metrics=["errors"],
-                success_metrics=["pages"],
+                success_metrics=["pages", "scraped_pages"],
                 field_mappings={
                     # Map raw telemetry field names to clean platform metric names
                     "web_queries": "queries",
                     "web_processed_pages": "pages",
+                    "web_scraped_pages": "scraped_pages",
                     "web_errors": "errors",
                 },
             ),
@@ -159,6 +165,19 @@ class PlatformManager:
                     "linkedin_returned_profiles": "profiles",
                     "linkedin_errors": "errors",
                     "linkedin_queries": "queries",
+                },
+            ),
+            "llm": PlatformConfig(
+                name="llm",
+                emission_weight=0.0,  # Not scored currently, but tracked for restart detection
+                metrics=["queries", "processed_items", "errors"],
+                error_metrics=["errors"],
+                success_metrics=["processed_items"],
+                field_mappings={
+                    # Map raw telemetry field names to clean platform metric names
+                    "llm_queries": "queries",
+                    "llm_processed_items": "processed_items",
+                    "llm_errors": "errors",
                 },
             ),
         }

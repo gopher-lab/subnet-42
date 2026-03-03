@@ -302,7 +302,17 @@ for deployment in "${DEPLOYMENT_ARRAY[@]}"; do
     fi
     echo "Copying cookie files to /home/masa/..."
 
-    COOKIES_DIR="${COOKIES_DIR:-./cookies}"
+    # Default to /app/cookies (Docker mount point) or fallback to local path
+    COOKIES_DIR="${COOKIES_DIR:-/app/cookies}"
+
+    # Check if directory exists
+    if [ ! -d "$COOKIES_DIR" ]; then
+        echo "Error: Cookie directory does not exist: $COOKIES_DIR"
+        echo "Please create the directory and add cookie JSON files, or set COOKIES_DIR to the correct path"
+        OVERALL_SUCCESS=false
+        continue
+    fi
+
     # Collect all files (for count and for fallback per-file mode)
     declare -a file_list=()
     for file in "$COOKIES_DIR"/*.json; do
@@ -312,7 +322,7 @@ for deployment in "${DEPLOYMENT_ARRAY[@]}"; do
     done
 
     if [ ${#file_list[@]} -eq 0 ]; then
-        echo "No cookie files found to copy"
+        echo "No cookie files found in $COOKIES_DIR"
     elif [ "$USE_TAR_BULK_COPY" = "true" ]; then
         # Fast path: one tarball per pod, single copy + extract
         if ! copy_bulk_tar_to_pod "$POD_NAME" "$NAMESPACE" "$TARGET_CONTAINER" "$COOKIES_DIR" "$KUBECONFIG_PATH"; then

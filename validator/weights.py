@@ -273,20 +273,31 @@ class WeightsManager:
                 )
 
                 # Split telemetry into chunks based on worker restarts
-                # Use twitter_returned_tweets as the restart indicator (legacy compatibility)
+                # Check ALL raw fields for decreases to detect restarts across all platforms
                 chunks = []
                 chunk_start = 0
 
-                for i in range(1, len(sorted_telemetry)):
-                    # Check for restart by looking at twitter_returned_tweets decrease
-                    current_tweets = sorted_telemetry[i].get_stat_value(
-                        "twitter_returned_tweets", 0
-                    )
-                    prev_tweets = sorted_telemetry[i - 1].get_stat_value(
-                        "twitter_returned_tweets", 0
-                    )
+                # Get all raw field names for restart detection across all platforms
+                from validator.platform_config import PlatformManager
 
-                    if current_tweets < prev_tweets:
+                platform_manager = PlatformManager()
+                all_raw_fields = platform_manager.get_all_raw_field_names()
+
+                for i in range(1, len(sorted_telemetry)):
+                    # Check for restart by looking at ANY field decreasing
+                    restart_detected = False
+                    restart_indicator_field = None
+
+                    for field in all_raw_fields:
+                        current_value = sorted_telemetry[i].get_stat_value(field, 0)
+                        prev_value = sorted_telemetry[i - 1].get_stat_value(field, 0)
+
+                        if current_value < prev_value:
+                            restart_detected = True
+                            restart_indicator_field = field
+                            break  # Found a restart indicator, no need to check other fields
+
+                    if restart_detected:
                         # Worker restart detected, end current chunk
                         chunks.append(
                             (chunk_start, i - 1)
@@ -294,7 +305,7 @@ class WeightsManager:
                         chunk_start = i  # Start new chunk at current record
                         logger.debug(
                             f"Worker restart detected for {hotkey} at timestamp "
-                            f"{sorted_telemetry[i].timestamp}, creating new chunk"
+                            f"{sorted_telemetry[i].timestamp} (indicator: {restart_indicator_field}), creating new chunk"
                         )
 
                 # Add the final chunk
@@ -303,10 +314,7 @@ class WeightsManager:
                 logger.debug(f"Created {len(chunks)} chunks for {hotkey}: {chunks}")
 
                 # Calculate deltas for each chunk and sum them up dynamically
-                from validator.platform_config import PlatformManager
-
-                platform_manager = PlatformManager()
-                all_raw_fields = platform_manager.get_all_raw_field_names()
+                # (PlatformManager already imported above for restart detection)
 
                 # Initialize dynamic delta totals
                 total_deltas = {}
