@@ -287,7 +287,8 @@ class NodeManager:
                 f"Removing TEE worker from MASA API: {address} (hotkey: {hotkey})"
             )
             
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=10)  # 10 second timeout
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
                     api_endpoint, json=payload, headers=headers
                 ) as response:
