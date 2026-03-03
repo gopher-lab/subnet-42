@@ -352,7 +352,7 @@ class WeightsManager:
 
                 # Extract platform metrics from delta stats
                 delta_platform_metrics = (
-                    platform_manager.extract_platform_metrics_from_stats(
+                    self.platform_manager.extract_platform_metrics_from_stats(
                         delta_stats_json
                     )
                 )
@@ -381,7 +381,7 @@ class WeightsManager:
                 for (
                     platform_name,
                     platform_config,
-                ) in platform_manager.get_all_platforms().items():
+                ) in self.platform_manager.get_all_platforms().items():
                     for error_metric in platform_config.error_metrics:
                         raw_field = platform_config.get_raw_field_name(error_metric)
                         total_errors += delta_stats_json.get(raw_field, 0)
