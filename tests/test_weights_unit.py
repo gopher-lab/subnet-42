@@ -71,16 +71,26 @@ def test_calculate_weights(weights_manager):
 
 @pytest.mark.asyncio
 async def test_set_weights(weights_manager, mock_validator):
-    # Mock the async method and dependencies
-    mock_validator.substrate.query = MagicMock(return_value=MagicMock(value=1))
+    # Mock the required validator attributes
+    mock_validator.substrate.url = "ws://localhost:9944"
+    mock_validator.netuid = 42
+    mock_validator.keypair.ss58_address = "validator1"
     mock_validator.metagraph.nodes = {
-        "node1": MagicMock(node_id=1),
-        "node2": MagicMock(node_id=2),
+        "validator1": MagicMock(node_id=0),
+        "node1": MagicMock(node_id=1, hotkey="node1"),
+        "node2": MagicMock(node_id=2, hotkey="node2"),
     }
-    with patch(
-        "validator.weights.weights.set_node_weights", return_value=True
-    ) as mock_set_node_weights:
-        await weights_manager.set_weights([])
+
+    # Mock telemetry storage to return empty data (simpler test path)
+    mock_validator.telemetry_storage = MagicMock()
+    mock_validator.telemetry_storage.get_all_telemetry = MagicMock(return_value={})
+
+    with patch("validator.weights.interface.get_substrate") as mock_get_substrate, \
+         patch("validator.weights.weights.blocks_since_last_update", return_value=1000), \
+         patch("validator.weights.weights.min_interval_to_set_weights", return_value=100), \
+         patch("validator.weights.weights.set_node_weights", return_value=True) as mock_set_node_weights:
+        mock_get_substrate.return_value = mock_validator.substrate
+        await weights_manager.set_weights()
         mock_set_node_weights.assert_called_once()
 
 
