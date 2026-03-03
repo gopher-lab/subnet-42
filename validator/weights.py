@@ -261,13 +261,10 @@ class WeightsManager:
             hotkey = node_data.hotkey
             all_hotkeys.append((node_data.node_id, hotkey))
 
-        print(f"all  hotkeys: {all_hotkeys}")
+        logger.debug(f"All hotkeys: {all_hotkeys}")
 
-        # Initialize PlatformManager once for all hotkeys (not inside the loop)
-        from validator.platform_config import PlatformManager
-
-        platform_manager = PlatformManager()
-        all_raw_fields = platform_manager.get_all_raw_field_names()
+        # Reuse the PlatformManager instance from __init__
+        all_raw_fields = self.platform_manager.get_all_raw_field_names()
 
         # Process hotkeys with telemetry data
         processed_hotkeys = set()
@@ -279,17 +276,18 @@ class WeightsManager:
                     key=lambda x: self._convert_timestamp_to_int(x.timestamp),
                 )
 
-                # Split telemetry into chunks based on worker restarts
-                # Use boot_time as the definitive restart indicator (set once at worker startup)
+                # Split telemetry into chunks based on worker restarts.
+                # Use boot_time as the definitive restart indicator (set once at worker startup).
+                # Note: Requires tee-worker versions that report boot_time. Workers with boot_time=0
+                # will not have restart detection and may be undercounted if they restart mid-window.
                 chunks = []
                 chunk_start = 0
 
                 for i in range(1, len(sorted_telemetry)):
-                    # Check for restart by comparing boot_time
                     current_boot_time = sorted_telemetry[i].boot_time
                     prev_boot_time = sorted_telemetry[i - 1].boot_time
 
-                    # A different (newer) boot_time indicates a restart
+                    # A different boot_time indicates a restart
                     if current_boot_time != prev_boot_time and current_boot_time > 0:
                         # Worker restart detected, end current chunk
                         chunks.append(

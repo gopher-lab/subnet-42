@@ -167,7 +167,7 @@ class PlatformManager:
             ),
             "llm": PlatformConfig(
                 name="llm",
-                emission_weight=0.0,  # Not scored currently, but tracked for restart detection
+                emission_weight=0.0,  # Not scored currently, but tracked for metrics visibility
                 metrics=["queries", "processed_items", "errors"],
                 error_metrics=["errors"],
                 success_metrics=["processed_items"],
