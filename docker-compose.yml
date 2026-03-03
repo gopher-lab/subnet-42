@@ -1,7 +1,7 @@
 services:
   neuron:
     profiles:
-      ["miner", "miner-tee", "miner-tee-vpn", "validator", "validator-tee"]
+      ["miner", "miner-tee", "validator", "validator-tee"]
     image: masaengineering/subnet-42:latest
     pull_policy: always
     restart: unless-stopped
@@ -66,76 +66,9 @@ services:
         mode: "non-blocking"
         max-buffer-size: "4m"
 
-  worker-vpn:
-    profiles: ["miner-tee-vpn"]
-    image: masaengineering/tee-worker:latest
-    pull_policy: always
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: ${WORKER_MEMORY_LIMIT:-0}
-          cpus: ${WORKER_CPU_LIMIT:-0}
-        reservations:
-          memory: ${WORKER_MEMORY_RESERVATION:-0}
-          cpus: ${WORKER_CPU_RESERVATION:-0}
-    ports:
-      - "${TEE_PORT:-8080}:${TEE_PORT:-8080}"
-    environment:
-      - http_proxy=http://vpn:${VPN_PORT:-3128}
-      - https_proxy=http://vpn:${VPN_PORT:-3128}
-    devices:
-      - /dev/sgx_enclave
-      - /dev/sgx_provision
-    volumes:
-      - ./.env:/home/masa/.env
-    depends_on:
-      vpn:
-        condition: service_healthy
-    logging:
-      driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
-        compress: "true"
-        mode: "non-blocking"
-        max-buffer-size: "4m"
-
-  vpn:
-    profiles: ["vpn", "miner-tee-vpn"]
-    build:
-      context: .
-      dockerfile: Dockerfile.vpn
-    image: vpn-service:latest
-    pull_policy: never
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun
-    ports:
-      - "${VPN_PORT:-3128}:${VPN_PORT:-3128}"
-    volumes:
-      - ./vpn:/etc/openvpn/config
-    env_file: .env
-    healthcheck:
-      test: ["CMD", "bash", "-c", '[ "$(cat /tmp/vpn_ready)" = "1" ]']
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
-        compress: "true"
-        mode: "non-blocking"
-        max-buffer-size: "4m"
-
   watchtower:
     profiles:
-      ["miner", "miner-tee", "miner-tee-vpn", "validator", "validator-tee"]
+      ["miner", "miner-tee", "validator", "validator-tee"]
     image: containrrr/watchtower:latest
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

@@ -20,8 +20,6 @@ data/*
 notebooks/.DS_Store
 .conda
 
-config.ovpn
-auth.txt
 cookies/
 
 .env*
