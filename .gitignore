@@ -32,3 +32,5 @@ key.pem
 *.conf
 
 kubeconfig*.yaml
+
+*.egg-info
