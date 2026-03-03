@@ -133,31 +133,6 @@ services:
         mode: "non-blocking"
         max-buffer-size: "4m"
 
-  cookies:
-    image: cookies-updater-kubernetes:latest
-    pull_policy: never
-    build:
-      context: .
-      dockerfile: Dockerfile.cookies.updater.kubernetes
-    volumes:
-      - ./.env:/app/.env
-      - ~/Downloads/cookie-monster:/app/cookies
-      - ./kubeconfig.yaml:/app/kubeconfig.yaml:ro
-    environment:
-      - DEPLOYMENTS=${DEPLOYMENTS}
-      - NAMESPACE=${NAMESPACE}
-      - PYTHONUNBUFFERED=1
-    restart: "no"
-    env_file: .env
-    logging:
-      driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
-        compress: "true"
-        mode: "non-blocking"
-        max-buffer-size: "4m"
-
   watchtower:
     profiles:
       ["miner", "miner-tee", "miner-tee-vpn", "validator", "validator-tee"]

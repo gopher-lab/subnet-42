@@ -24,9 +24,6 @@ jobs:
       matrix:
         include:
           - dockerfile: Dockerfile.vpn
-          - dockerfile: Dockerfile.cookies.generator
-          - dockerfile: Dockerfile.cookies.updater.docker
-          - dockerfile: Dockerfile.cookies.updater.kubernetes
     steps:
       - name: Checkout
         uses: actions/checkout@v4
