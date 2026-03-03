@@ -11,7 +11,6 @@ from interfaces.types import NodeData
 from validator.telemetry import TEETelemetryClient
 from validator.errors_storage import ErrorsStorage
 import asyncio
-import aiohttp
 from datetime import datetime
 import weakref
 
@@ -278,38 +277,35 @@ class NodeManager:
             base_url = masa_tee_api.rstrip("/")
             api_endpoint = f"{base_url}/remove-tee-worker"
             payload = {"address": address}
-            headers = {
-                "X-API-Key": masa_tee_api_key,
-                "Content-Type": "application/json",
-            }
+            headers = {"X-API-Key": masa_tee_api_key}
             
             logger.info(
                 f"Removing TEE worker from MASA API: {address} (hotkey: {hotkey})"
             )
             
-            timeout = aiohttp.ClientTimeout(total=10)  # 10 second timeout
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    api_endpoint, json=payload, headers=headers
-                ) as response:
-                    if response.status == 200:
-                        logger.info(
-                            f"Successfully removed TEE worker from MASA API: {address}"
-                        )
-                        return True
-                    elif response.status == 404:
-                        logger.debug(
-                            f"TEE worker not found in MASA API (already removed?): {address}"
-                        )
-                        return True
-                    else:
-                        response_text = await response.text()
-                        logger.warning(
-                            f"Failed to remove TEE worker from MASA API: "
-                            f"{response.status} - {response_text}"
-                        )
-                        return False
-                        
+            response = await self.validator.http_client_manager.client.post(
+                api_endpoint, json=payload, headers=headers, timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                logger.info(
+                    f"Successfully removed TEE worker from MASA API: {address}"
+                )
+                return True
+            elif response.status_code == 404:
+                logger.debug(
+                    f"TEE worker not found in MASA API (already removed?): {address}"
+                )
+                return True
+            else:
+                logger.warning(
+                    f"Failed to remove TEE worker from MASA API: "
+                    f"{response.status_code} - {response.text}"
+                )
+                return False
+                
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(
                 f"Error removing TEE worker from MASA API: {address} - {str(e)}"
