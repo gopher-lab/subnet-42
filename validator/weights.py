@@ -262,6 +262,13 @@ class WeightsManager:
             all_hotkeys.append((node_data.node_id, hotkey))
 
         print(f"all  hotkeys: {all_hotkeys}")
+
+        # Initialize PlatformManager once for all hotkeys (not inside the loop)
+        from validator.platform_config import PlatformManager
+
+        platform_manager = PlatformManager()
+        all_raw_fields = platform_manager.get_all_raw_field_names()
+
         # Process hotkeys with telemetry data
         processed_hotkeys = set()
         for hotkey, telemetry_list in telemetry_by_hotkey.items():
@@ -273,31 +280,17 @@ class WeightsManager:
                 )
 
                 # Split telemetry into chunks based on worker restarts
-                # Check ALL raw fields for decreases to detect restarts across all platforms
+                # Use boot_time as the definitive restart indicator (set once at worker startup)
                 chunks = []
                 chunk_start = 0
 
-                # Get all raw field names for restart detection across all platforms
-                from validator.platform_config import PlatformManager
-
-                platform_manager = PlatformManager()
-                all_raw_fields = platform_manager.get_all_raw_field_names()
-
                 for i in range(1, len(sorted_telemetry)):
-                    # Check for restart by looking at ANY field decreasing
-                    restart_detected = False
-                    restart_indicator_field = None
+                    # Check for restart by comparing boot_time
+                    current_boot_time = sorted_telemetry[i].boot_time
+                    prev_boot_time = sorted_telemetry[i - 1].boot_time
 
-                    for field in all_raw_fields:
-                        current_value = sorted_telemetry[i].get_stat_value(field, 0)
-                        prev_value = sorted_telemetry[i - 1].get_stat_value(field, 0)
-
-                        if current_value < prev_value:
-                            restart_detected = True
-                            restart_indicator_field = field
-                            break  # Found a restart indicator, no need to check other fields
-
-                    if restart_detected:
+                    # A different (newer) boot_time indicates a restart
+                    if current_boot_time != prev_boot_time and current_boot_time > 0:
                         # Worker restart detected, end current chunk
                         chunks.append(
                             (chunk_start, i - 1)
@@ -305,7 +298,7 @@ class WeightsManager:
                         chunk_start = i  # Start new chunk at current record
                         logger.debug(
                             f"Worker restart detected for {hotkey} at timestamp "
-                            f"{sorted_telemetry[i].timestamp} (indicator: {restart_indicator_field}), creating new chunk"
+                            f"{sorted_telemetry[i].timestamp} (boot_time changed: {prev_boot_time} -> {current_boot_time}), creating new chunk"
                         )
 
                 # Add the final chunk
