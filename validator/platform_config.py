@@ -92,13 +92,11 @@ class PlatformManager:
                 emission_weight=0.05,
                 metrics=[
                     "followers",
-                    "errors",
                 ],
-                error_metrics=["errors"],
+                error_metrics=[],
                 success_metrics=["followers"],
                 field_mappings={
                     "twitter_returned_followers": "followers",
-                    "twitter_errors": "errors",
                 },
             ),
             "tiktok-transcription": PlatformConfig(
