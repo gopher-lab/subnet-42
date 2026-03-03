@@ -1,5 +1,5 @@
 import random
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from fiber.networking.models import NodeWithFernet as Node
 from fiber.encrypted.validator import handshake, client as vali_client
 from cryptography.fernet import Fernet
@@ -242,7 +242,7 @@ class NodeManager:
             tee_addresses = self.validator.routing_table.get_miner_addresses(hotkey)
             
             # Remove each TEE address from the masa-tee-api
-            for address, worker_id in tee_addresses:
+            for address, _ in tee_addresses:
                 await self._remove_tee_worker_from_api(address, hotkey)
             
             del self.connected_nodes[hotkey]
