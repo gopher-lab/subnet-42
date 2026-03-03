@@ -160,15 +160,9 @@ class TestProcessMonitoring:
                 boot_time=0,
                 last_operation_time=0,
                 current_time=1000,
-                twitter_auth_errors=0,
-                twitter_errors=0,
-                twitter_ratelimit_errors=0,
-                twitter_returned_other=0,
-                twitter_returned_profiles=0,  # Not used in scoring anymore
-                twitter_returned_tweets=200,
-                twitter_scrapes=0,
-                web_errors=0,
-                web_success=0,  # Not used in scoring anymore
+                stats_json={
+                    "twitter_returned_tweets": 200,
+                },
             ),
             # Low tweets, high errors
             NodeData(
@@ -179,15 +173,9 @@ class TestProcessMonitoring:
                 boot_time=0,
                 last_operation_time=0,
                 current_time=1000,
-                twitter_auth_errors=0,
-                twitter_errors=0,
-                twitter_ratelimit_errors=0,
-                twitter_returned_other=0,
-                twitter_returned_profiles=0,  # Not used in scoring anymore
-                twitter_returned_tweets=20,
-                twitter_scrapes=0,
-                web_errors=0,
-                web_success=0,  # Not used in scoring anymore
+                stats_json={
+                    "twitter_returned_tweets": 20,
+                },
             ),
         ]
 
@@ -241,15 +229,9 @@ class TestProcessMonitoring:
             boot_time=0,
             last_operation_time=0,
             current_time=1000,
-            twitter_auth_errors=0,
-            twitter_errors=0,
-            twitter_ratelimit_errors=0,
-            twitter_returned_other=0,
-            twitter_returned_profiles=0,
-            twitter_returned_tweets=100,
-            twitter_scrapes=0,
-            web_errors=0,
-            web_success=0,
+            stats_json={
+                "twitter_returned_tweets": 100,
+            },
         )
 
         test_node.time_span_seconds = 3600  # 1 hour
@@ -290,15 +272,11 @@ class TestProcessMonitoring:
             boot_time=0,
             last_operation_time=0,
             current_time=1000,
-            twitter_auth_errors=0,
-            twitter_errors=0,
-            twitter_ratelimit_errors=0,
-            twitter_returned_other=0,
-            twitter_returned_profiles=50,
-            twitter_returned_tweets=100,
-            twitter_scrapes=0,
-            web_errors=0,
-            web_success=75,
+            stats_json={
+                "twitter_returned_profiles": 50,
+                "twitter_returned_tweets": 100,
+                "web_processed_pages": 75,
+            },
         )
 
         # Zero time span should be handled gracefully
@@ -363,15 +341,9 @@ class TestProcessMonitoring:
                 boot_time=0,
                 last_operation_time=0,
                 current_time=0,
-                twitter_auth_errors=0,
-                twitter_errors=0,
-                twitter_ratelimit_errors=0,
-                twitter_returned_other=0,
-                twitter_returned_profiles=0,
-                twitter_returned_tweets=100,  # High tweet count
-                twitter_scrapes=0,
-                web_errors=0,
-                web_success=0,
+                stats_json={
+                    "twitter_returned_tweets": 100,  # High tweet count
+                },
             ),
             NodeData(
                 hotkey="hotkey2",
@@ -381,15 +353,9 @@ class TestProcessMonitoring:
                 boot_time=0,
                 last_operation_time=0,
                 current_time=0,
-                twitter_auth_errors=0,
-                twitter_errors=0,
-                twitter_ratelimit_errors=0,
-                twitter_returned_other=0,
-                twitter_returned_profiles=0,
-                twitter_returned_tweets=50,  # Medium tweet count
-                twitter_scrapes=0,
-                web_errors=0,
-                web_success=0,
+                stats_json={
+                    "twitter_returned_tweets": 50,  # Medium tweet count
+                },
             ),
             NodeData(
                 hotkey="hotkey3",
@@ -399,15 +365,9 @@ class TestProcessMonitoring:
                 boot_time=0,
                 last_operation_time=0,
                 current_time=0,
-                twitter_auth_errors=0,
-                twitter_errors=0,
-                twitter_ratelimit_errors=0,
-                twitter_returned_other=0,
-                twitter_returned_profiles=0,
-                twitter_returned_tweets=10,  # Low tweet count
-                twitter_scrapes=0,
-                web_errors=0,
-                web_success=0,
+                stats_json={
+                    "twitter_returned_tweets": 10,  # Low tweet count
+                },
             ),
         ]
 
@@ -424,16 +384,19 @@ class TestProcessMonitoring:
             delta_node_data, simulation=True
         )
 
-        # Verify we got addresses in priority order
-        assert len(priority_miners) == 3
-        # Should be ordered by score (highest first)
-        # hotkey1 should be first (highest tweets), hotkey3 should be last (lowest tweets)
-        assert "192.168.1.1" in priority_miners  # hotkey1
-        assert "192.168.1.2" in priority_miners  # hotkey2
-        assert "192.168.1.3" in priority_miners  # hotkey3
-
-        # First address should correspond to highest scoring node (hotkey1)
-        assert priority_miners[0] == "192.168.1.1"
+        # get_priority_miners_by_score returns a weighted list (256 total)
+        # with higher-scoring nodes appearing more frequently
+        assert len(priority_miners) == 256
+        
+        # Higher scoring nodes should appear in the list
+        unique_addresses = set(priority_miners)
+        assert "192.168.1.1" in unique_addresses  # hotkey1 (highest tweets)
+        assert "192.168.1.2" in unique_addresses  # hotkey2 (medium tweets)
+        
+        # The highest scorer should appear more frequently
+        count_hotkey1 = priority_miners.count("192.168.1.1")
+        count_hotkey2 = priority_miners.count("192.168.1.2")
+        assert count_hotkey1 > count_hotkey2  # More tweets = higher frequency
 
 
 if __name__ == "__main__":
