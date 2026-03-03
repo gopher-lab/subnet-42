@@ -1,5 +1,5 @@
 import random
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from fiber.networking.models import NodeWithFernet as Node
 from fiber.encrypted.validator import handshake, client as vali_client
 from cryptography.fernet import Fernet
@@ -11,6 +11,7 @@ from interfaces.types import NodeData
 from validator.telemetry import TEETelemetryClient
 from validator.errors_storage import ErrorsStorage
 import asyncio
+import aiohttp
 from datetime import datetime
 import weakref
 
@@ -235,10 +236,84 @@ class NodeManager:
                 )
                 keys_to_delete.append(hotkey)
 
-        logger.info(f"Deleteing keys from connected nodes: {keys_to_delete}")
+        logger.info(f"Deleting keys from connected nodes: {keys_to_delete}")
         for hotkey in keys_to_delete:
+            # Get TEE addresses before clearing so we can remove from masa-tee-api
+            tee_addresses = self.validator.routing_table.get_miner_addresses(hotkey)
+            
+            # Remove each TEE address from the masa-tee-api
+            for address, worker_id in tee_addresses:
+                await self._remove_tee_worker_from_api(address, hotkey)
+            
             del self.connected_nodes[hotkey]
             self.validator.routing_table.clear_miner(hotkey)
+
+    async def _remove_tee_worker_from_api(self, address: str, hotkey: str) -> bool:
+        """
+        Remove a TEE worker from the MASA TEE API when a miner deregisters.
+        
+        Args:
+            address: The TEE worker address to remove
+            hotkey: The hotkey of the deregistered miner (for logging)
+            
+        Returns:
+            True if removal was successful, False otherwise
+        """
+        masa_tee_api = os.getenv("MASA_TEE_API", "")
+        masa_tee_api_key = os.getenv("MASA_TEE_API_KEY", "")
+        
+        if not masa_tee_api:
+            logger.debug(
+                f"MASA_TEE_API not configured, skipping TEE worker removal for {address}"
+            )
+            return False
+            
+        if not masa_tee_api_key:
+            logger.debug(
+                f"MASA_TEE_API_KEY not configured, skipping TEE worker removal for {address}"
+            )
+            return False
+        
+        try:
+            base_url = masa_tee_api.rstrip("/")
+            api_endpoint = f"{base_url}/remove-tee-worker"
+            payload = {"address": address}
+            headers = {
+                "X-API-Key": masa_tee_api_key,
+                "Content-Type": "application/json",
+            }
+            
+            logger.info(
+                f"Removing TEE worker from MASA API: {address} (hotkey: {hotkey})"
+            )
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    api_endpoint, json=payload, headers=headers
+                ) as response:
+                    if response.status == 200:
+                        logger.info(
+                            f"Successfully removed TEE worker from MASA API: {address}"
+                        )
+                        return True
+                    elif response.status == 404:
+                        logger.debug(
+                            f"TEE worker not found in MASA API (already removed?): {address}"
+                        )
+                        return True
+                    else:
+                        response_text = await response.text()
+                        logger.warning(
+                            f"Failed to remove TEE worker from MASA API: "
+                            f"{response.status} - {response_text}"
+                        )
+                        return False
+                        
+        except Exception as e:
+            logger.error(
+                f"Error removing TEE worker from MASA API: {address} - {str(e)}"
+            )
+            return False
 
     async def send_custom_message(self, node_hotkey: str, message: str) -> None:
         """
